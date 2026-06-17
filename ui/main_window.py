@@ -2,19 +2,35 @@
 import sys
 from datetime import datetime, timedelta
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QTime
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QScrollArea, QSpinBox, QTextEdit, QTimeEdit, QVBoxLayout,
-    QWidget, QComboBox, QFrame,
+    QSpinBox, QTextEdit, QTimeEdit, QVBoxLayout,
+    QWidget, QComboBox,
 )
-from PyQt6.QtCore import QTime
 
 from config.config_manager import load_config, save_config
 from core.backup_engine import BackupWorker
 from core.storage import IONOSStorage
+
+
+class _ConnectionTestThread(QThread):
+    result = pyqtSignal(bool)
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
+        self._cfg = cfg
+
+    def run(self):
+        storage = IONOSStorage(
+            self._cfg["ionos_endpoint"],
+            self._cfg["ionos_bucket"],
+            self._cfg["ionos_access_key"],
+            self._cfg["ionos_secret_key"],
+        )
+        self.result.emit(storage.test_connection())
 
 
 class MainWindow(QMainWindow):
@@ -192,6 +208,7 @@ class MainWindow(QMainWindow):
         t = QTime.fromString(self._config.get("schedule_time", "02:00"), "HH:mm")
         self._time_edit.setTime(t if t.isValid() else QTime(2, 0))
         self._retention_spin.setValue(self._config.get("retention_count", 30))
+        self._on_schedule_type_changed(self._schedule_combo.currentText())
 
     def _collect_config(self) -> dict:
         cfg = dict(self._config)
@@ -231,8 +248,11 @@ class MainWindow(QMainWindow):
             return
         self._test_btn.setEnabled(False)
         self._test_btn.setText("Testing…")
-        storage = IONOSStorage(cfg["ionos_endpoint"], cfg["ionos_bucket"], cfg["ionos_access_key"], cfg["ionos_secret_key"])
-        ok = storage.test_connection()
+        self._conn_thread = _ConnectionTestThread(cfg, parent=self)
+        self._conn_thread.result.connect(self._on_connection_result)
+        self._conn_thread.start()
+
+    def _on_connection_result(self, ok: bool):
         self._test_btn.setEnabled(True)
         self._test_btn.setText("Test Connection")
         if ok:
@@ -278,6 +298,8 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------- scheduler
 
     def _restart_scheduler(self):
+        if hasattr(self, "_timer"):
+            self._timer.stop()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_scheduler_tick)
         self._timer.start(60_000)  # check every minute
