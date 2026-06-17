@@ -1,0 +1,8 @@
+{"type":"server-started","port":58139,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:58139","screen_dir":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/content","state_dir":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/state"}
+{"type":"screen-added","file":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/content/ui-style.html"}
+{"source":"user-event","type":"click","text":"C\n    \n      Both: Tray + Window\n      Tray icon for quick status and triggering. Click to open the full window for configuration and logs. The most complete experience — more to build, but most polished result.","choice":"c","id":null,"timestamp":1781704925151}
+{"type":"screen-added","file":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/content/waiting.html"}
+{"type":"screen-added","file":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/content/architecture.html"}
+{"type":"screen-added","file":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/content/ui-mockup.html"}
+{"type":"screen-added","file":"/Users/morteza/Desktop/backupsystem/.superpowers/brainstorm/11071-1781704863/content/waiting-2.html"}
+{"type":"server-stopped","reason":"idle timeout"}

@@ -1,0 +1,87 @@
+<h2>Main Window Layout</h2>
+<p class="subtitle">What you'll see when you open the app</p>
+
+<div class="mockup" style="max-width:620px;margin:0 auto">
+  <div class="mockup-header">BackupSystem — Main Window</div>
+  <div class="mockup-body" style="padding:0">
+
+    <!-- Folders Section -->
+    <div style="padding:16px 20px;border-bottom:1px solid #334155">
+      <div class="label">Backup Folders</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+        <input class="mock-input" style="flex:1" placeholder="C:\Users\You\Documents" readonly>
+        <button class="mock-button" style="white-space:nowrap">Browse</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+        <input class="mock-input" style="flex:1" placeholder="C:\Users\You\Projects" readonly>
+        <button class="mock-button" style="white-space:nowrap">Browse</button>
+      </div>
+    </div>
+
+    <!-- IONOS Credentials -->
+    <div style="padding:16px 20px;border-bottom:1px solid #334155">
+      <div class="label">IONOS Object Storage</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div>
+          <div style="font-size:11px;color:#64748b;margin-bottom:3px">Endpoint URL</div>
+          <input class="mock-input" placeholder="s3-eu-central-1.ionoscloud.com">
+        </div>
+        <div>
+          <div style="font-size:11px;color:#64748b;margin-bottom:3px">Bucket Name</div>
+          <input class="mock-input" placeholder="my-backups">
+        </div>
+        <div>
+          <div style="font-size:11px;color:#64748b;margin-bottom:3px">Access Key</div>
+          <input class="mock-input" placeholder="••••••••">
+        </div>
+        <div>
+          <div style="font-size:11px;color:#64748b;margin-bottom:3px">Secret Key</div>
+          <input class="mock-input" placeholder="••••••••">
+        </div>
+      </div>
+    </div>
+
+    <!-- Schedule + Encryption + Retention -->
+    <div style="padding:16px 20px;border-bottom:1px solid #334155;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+      <div>
+        <div class="label">Schedule</div>
+        <select class="mock-input" style="margin-top:8px;width:100%">
+          <option>Daily at 02:00</option>
+        </select>
+      </div>
+      <div>
+        <div class="label">Keep Last</div>
+        <input class="mock-input" style="margin-top:8px;width:100%" placeholder="30 backups">
+      </div>
+      <div>
+        <div class="label">Encryption Password</div>
+        <input class="mock-input" style="margin-top:8px;width:100%" placeholder="••••••••" type="password">
+      </div>
+    </div>
+
+    <!-- Status + Log -->
+    <div style="padding:16px 20px;border-bottom:1px solid #334155">
+      <div class="label">Last Backup Status</div>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:10px">
+        <span style="color:#22c55e;font-size:13px">✓ Success</span>
+        <span style="color:#64748b;font-size:12px">2026-06-17 02:00 · 142 MB uploaded</span>
+      </div>
+      <div style="margin-top:10px;background:#0f172a;border-radius:6px;padding:10px;font-size:11px;color:#64748b;font-family:monospace;height:60px;overflow:hidden">
+        [02:00:01] Zipping folders...<br>
+        [02:00:08] Encrypting archive...<br>
+        [02:00:09] Uploading to IONOS... 100%
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div style="padding:16px 20px;display:flex;gap:10px;justify-content:flex-end">
+      <button class="mock-button" style="background:#1e40af;color:white;border-color:#1e40af">▶ Backup Now</button>
+      <button class="mock-button">Save Settings</button>
+    </div>
+
+  </div>
+</div>
+
+<p style="text-align:center;margin-top:16px;color:#64748b;font-size:13px">
+  Tray icon (bottom-right taskbar): right-click → <strong>Backup Now</strong> / <strong>Open</strong> / <strong>Quit</strong>
+</p>

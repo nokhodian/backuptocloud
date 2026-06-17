@@ -60,10 +60,11 @@ class BackupWorker(QThread):
             file_size = os.path.getsize(enc_path)
 
             def _progress_cb(transferred: int, total: int) -> None:
-                pct = 50 + int((transferred / total) * 40)
-                self.progress.emit(pct)
+                if total > 0:
+                    pct = 50 + int((transferred / total) * 40)
+                    self.progress.emit(pct)
 
-            _upload_with_retry(storage, enc_path, enc_name, _progress_cb)
+            _upload_with_retry(storage, enc_path, enc_name, _progress_cb, log_fn=self.log_line.emit)
             self.progress.emit(90)
 
             self.log_line.emit(f"[{timestamp}] Applying retention policy...")
@@ -76,16 +77,18 @@ class BackupWorker(QThread):
             self.finished.emit(True, msg)
 
 
-def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, progress_cb) -> None:
+def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, progress_cb, log_fn=None) -> None:
     import time
     delays = [5, 15, 45]
     for attempt, delay in enumerate(delays):
         try:
             storage.upload(local_path, object_key, progress_cb)
             return
-        except Exception:
+        except Exception as exc:
             if attempt == len(delays) - 1:
                 raise
+            if log_fn:
+                log_fn(f"Upload attempt {attempt + 1} failed ({exc}), retrying in {delay}s...")
             time.sleep(delay)
 
 

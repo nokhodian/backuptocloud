@@ -1,0 +1,43 @@
+<h2>System Architecture</h2>
+<p class="subtitle">Four layers — each with one clear job</p>
+
+<div style="display:flex;flex-direction:column;gap:12px;max-width:700px;margin:0 auto">
+
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:20px">
+    <div class="label" style="color:#7c3aed">UI Layer</div>
+    <h3 style="margin:6px 0 4px">PyQt6 Window + System Tray</h3>
+    <p style="margin:0;color:#94a3b8">Main window (folder picker, schedule config, retention, password, logs, progress bar) + tray icon with right-click menu (Backup Now, Open, Quit)</p>
+  </div>
+
+  <div style="text-align:center;color:#475569;font-size:20px">↕</div>
+
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:20px">
+    <div class="label" style="color:#0891b2">Backup Engine</div>
+    <h3 style="margin:6px 0 4px">backup_engine.py</h3>
+    <p style="margin:0;color:#94a3b8">Zips the two selected folders → AES-encrypts the archive → uploads to IONOS → applies retention policy (deletes old archives beyond limit)</p>
+  </div>
+
+  <div style="text-align:center;color:#475569;font-size:20px">↕</div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px">
+      <div class="label" style="color:#059669">Scheduler</div>
+      <h3 style="margin:6px 0 4px">scheduler.py</h3>
+      <p style="margin:0;color:#94a3b8">Runs in a background thread. Triggers the backup engine on the configured interval (hourly / daily / weekly + time-of-day)</p>
+    </div>
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px">
+      <div class="label" style="color:#dc2626">Config Store</div>
+      <h3 style="margin:6px 0 4px">config.json</h3>
+      <p style="margin:0;color:#94a3b8">Stores folder paths, IONOS credentials (bucket, endpoint, access key, secret), schedule, retention count, encrypted password hash</p>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:#475569;font-size:20px">↕</div>
+
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:20px">
+    <div class="label" style="color:#d97706">IONOS Object Storage</div>
+    <h3 style="margin:6px 0 4px">boto3 (S3-compatible)</h3>
+    <p style="margin:0;color:#94a3b8">Uploads encrypted .zip archives. Each file named <code style="color:#f59e0b">backup-YYYY-MM-DD-HH-MM.zip.enc</code>. Bucket listing used for retention cleanup.</p>
+  </div>
+
+</div>
