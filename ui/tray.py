@@ -20,6 +20,9 @@ class TrayIcon(QSystemTrayIcon):
         backup_action = menu.addAction("Backup Now")
         backup_action.triggered.connect(self._main_window._on_backup_now)
 
+        update_action = menu.addAction("Check for Updates")
+        update_action.triggered.connect(self._main_window._on_check_updates)
+
         menu.addSeparator()
 
         quit_action = menu.addAction("Quit")

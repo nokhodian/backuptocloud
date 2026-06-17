@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from config.config_manager import load_config, save_config
 from core.backup_engine import BackupWorker
 from core.storage import IONOSStorage
+from core.updater import check_for_update, download_update, install_update
 
 
 class _ConnectionTestThread(QThread):
@@ -33,21 +34,56 @@ class _ConnectionTestThread(QThread):
         self.result.emit(storage.test_connection())
 
 
+class _UpdateCheckThread(QThread):
+    update_available = pyqtSignal(str, str)   # (latest_version, download_url)
+    no_update = pyqtSignal()
+
+    def __init__(self, current_version: str, parent=None):
+        super().__init__(parent)
+        self._current_version = current_version
+
+    def run(self):
+        latest, url = check_for_update(self._current_version)
+        if latest:
+            self.update_available.emit(latest, url)
+        else:
+            self.no_update.emit()
+
+
+class _UpdateDownloadThread(QThread):
+    progress = pyqtSignal(int)          # 0-100
+    done = pyqtSignal(str)              # path to downloaded exe, or "" on failure
+
+    def __init__(self, download_url: str, parent=None):
+        super().__init__(parent)
+        self._url = download_url
+
+    def run(self):
+        def _cb(downloaded, total):
+            self.progress.emit(int(downloaded * 100 / total))
+
+        path = download_update(self._url, progress_cb=_cb)
+        self.done.emit(path or "")
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, version: str = "0.0.0"):
         super().__init__()
+        self._version = version
         self._config = load_config()
         self._worker: BackupWorker | None = None
         self._next_run: datetime | None = None
+        self._update_exe_path: str | None = None
 
         self._setup_ui()
         self._load_config_to_ui()
         self._restart_scheduler()
+        self._check_for_updates_silently()
 
     # ------------------------------------------------------------------ setup
 
     def _setup_ui(self):
-        self.setWindowTitle("BackupSystem")
+        self.setWindowTitle(f"BackupSystem v{self._version}")
         self.setMinimumWidth(640)
 
         root = QWidget()
@@ -175,6 +211,11 @@ class MainWindow(QMainWindow):
 
     def _build_buttons_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
+
+        self._update_btn = QPushButton("Check for Updates")
+        self._update_btn.clicked.connect(self._on_check_updates)
+        row.addWidget(self._update_btn)
+
         row.addStretch()
 
         self._test_btn = QPushButton("Test Connection")
@@ -334,6 +375,75 @@ class MainWindow(QMainWindow):
             cfg = self._collect_config()
             cfg["password"] = self._password_edit.text()
             self._start_backup(cfg)
+
+    # --------------------------------------------------------- auto-update
+
+    def _check_for_updates_silently(self):
+        self._update_check_thread = _UpdateCheckThread(self._version, parent=self)
+        self._update_check_thread.update_available.connect(self._on_update_available)
+        self._update_check_thread.start()
+
+    def _on_check_updates(self):
+        if hasattr(self, "_update_check_thread") and self._update_check_thread.isRunning():
+            return
+        self._update_btn.setEnabled(False)
+        self._update_btn.setText("Checking…")
+        self._update_check_thread = _UpdateCheckThread(self._version, parent=self)
+        self._update_check_thread.update_available.connect(self._on_update_available)
+        self._update_check_thread.no_update.connect(self._on_no_update)
+        self._update_check_thread.start()
+
+    def _on_no_update(self):
+        self._update_btn.setEnabled(True)
+        self._update_btn.setText("Check for Updates")
+        QMessageBox.information(self, "Up to date", f"You are running the latest version (v{self._version}).")
+
+    def _on_update_available(self, latest: str, url: str):
+        self._update_btn.setEnabled(True)
+        self._update_btn.setText("Check for Updates")
+        reply = QMessageBox.question(
+            self,
+            "Update Available",
+            f"Version {latest} is available (you have v{self._version}).\n\nDownload and install now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._start_download(url)
+
+    def _start_download(self, url: str):
+        self._update_btn.setEnabled(False)
+        self._update_btn.setText("Downloading…")
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setValue(0)
+        self._dl_thread = _UpdateDownloadThread(url, parent=self)
+        self._dl_thread.progress.connect(self._progress_bar.setValue)
+        self._dl_thread.done.connect(self._on_download_done)
+        self._dl_thread.start()
+
+    def _on_download_done(self, path: str):
+        self._progress_bar.setVisible(False)
+        self._update_btn.setEnabled(True)
+        self._update_btn.setText("Check for Updates")
+        if not path:
+            QMessageBox.critical(self, "Update Failed", "Could not download the update. Please try again later.")
+            return
+        self._update_exe_path = path
+        reply = QMessageBox.question(
+            self,
+            "Install Update",
+            "Download complete. The application will restart to apply the update.\n\nRestart now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            if install_update(path):
+                from PyQt6.QtWidgets import QApplication
+                QApplication.quit()
+            else:
+                QMessageBox.information(
+                    self,
+                    "Manual Install Required",
+                    f"Auto-update is only supported in the installed .exe.\n\nNew file is at:\n{path}",
+                )
 
     # -------------------------------------------------------- window lifecycle
 

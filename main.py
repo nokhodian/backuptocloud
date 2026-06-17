@@ -4,6 +4,7 @@ import os
 from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 from PyQt6.QtGui import QIcon
 
+from version import __version__
 from ui.main_window import MainWindow
 from ui.tray import TrayIcon
 
@@ -20,7 +21,7 @@ def main():
         QMessageBox.critical(None, "Error", "System tray is not available on this desktop.")
         sys.exit(1)
 
-    window = MainWindow()
+    window = MainWindow(__version__)
     window.setWindowIcon(icon)
 
     tray = TrayIcon(icon, window, parent=app)
