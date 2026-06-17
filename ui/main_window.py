@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
         self._worker = BackupWorker(cfg, parent=self)
         self._worker.progress.connect(self._progress_bar.setValue)
         self._worker.log_line.connect(self._append_log)
-        self._worker.finished.connect(self._on_backup_finished)
+        self._worker.backup_done.connect(self._on_backup_finished)
         self._worker.start()
 
     def _append_log(self, line: str):
@@ -325,6 +325,9 @@ class MainWindow(QMainWindow):
     def _on_scheduler_tick(self):
         if self._next_run and datetime.now() >= self._next_run:
             self._compute_next_run()
+            if self._worker and self._worker.isRunning():
+                self._append_log("Scheduled backup skipped — previous backup still running.")
+                return
             if not self._password_edit.text():
                 self._append_log("Scheduled backup skipped — password not entered.")
                 return

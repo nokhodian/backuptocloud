@@ -13,7 +13,7 @@ from core.storage import IONOSStorage
 class BackupWorker(QThread):
     progress = pyqtSignal(int)      # 0-100
     log_line = pyqtSignal(str)
-    finished = pyqtSignal(bool, str)  # success, message
+    backup_done = pyqtSignal(bool, str)  # success, message
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
@@ -24,7 +24,7 @@ class BackupWorker(QThread):
             self._execute()
         except Exception as exc:
             self.log_line.emit(f"ERROR: {exc}")
-            self.finished.emit(False, str(exc))
+            self.backup_done.emit(False, str(exc))
 
     def _execute(self):
         cfg = self._config
@@ -74,7 +74,7 @@ class BackupWorker(QThread):
             size_mb = file_size / (1024 * 1024)
             msg = f"Backup complete — {size_mb:.1f} MB uploaded"
             self.log_line.emit(f"[{timestamp}] {msg}")
-            self.finished.emit(True, msg)
+            self.backup_done.emit(True, msg)
 
 
 def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, progress_cb, log_fn=None) -> None:
