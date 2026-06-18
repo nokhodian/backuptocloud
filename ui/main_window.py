@@ -66,7 +66,7 @@ class _UpdateDownloadThread(QThread):
         def _cb(downloaded, total):
             self.progress.emit(int(downloaded * 100 / total))
 
-        path = download_update(self._url, checksum_url=self._checksum_url, progress_cb=_cb)
+        path = download_update(self._url, checksum_url=self._checksum_url, progress_cb=_cb, worker=self)
         self.done.emit(path or "")
 
 
@@ -286,9 +286,8 @@ class MainWindow(QMainWindow):
         except RuntimeError as e:
             QMessageBox.critical(self, "Save Failed", str(e))
             return
-        pwd = self._password_edit.text()
-        if pwd:
-            save_encryption_password(pwd)
+        # Always call save_encryption_password so clearing the field deletes the stored credential.
+        save_encryption_password(self._password_edit.text())
         self._restart_scheduler()
         self._status_label.setText("Settings saved.")
 
@@ -345,7 +344,10 @@ class MainWindow(QMainWindow):
         icon = "✓" if success else "✗"
         self._status_label.setText(f"{icon} {ts} — {message}")
         self._config["last_run"] = datetime.now().isoformat()
-        save_config(self._config)
+        try:
+            save_config(self._config)
+        except RuntimeError as e:
+            self._append_log(f"WARNING: could not persist last_run timestamp: {e}")
 
     # -------------------------------------------------------------- scheduler
 
@@ -371,7 +373,7 @@ class MainWindow(QMainWindow):
             self._next_run = candidate if candidate > now else candidate + timedelta(days=1)
         elif stype == "weekly":
             candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            days_ahead = (6 - now.weekday()) % 7  # next Sunday
+            days_ahead = (6 - now.weekday()) % 7  # always runs on Sunday by design
             self._next_run = candidate + timedelta(days=days_ahead if days_ahead else 7)
 
     def _on_scheduler_tick(self):
@@ -484,6 +486,7 @@ class MainWindow(QMainWindow):
                        getattr(self, "_dl_thread", None),
                        getattr(self, "_update_check_thread", None)]:
             if thread and thread.isRunning():
+                thread.requestInterruption()  # cooperative cancellation for blocking loops
                 thread.quit()
                 thread.wait(3000)
         QApplication.quit()

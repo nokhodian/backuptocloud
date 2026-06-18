@@ -64,7 +64,7 @@ class BackupWorker(QThread):
                     pct = 50 + int((transferred / total) * 40)
                     self.progress.emit(pct)
 
-            _upload_with_retry(storage, enc_path, enc_name, _progress_cb, log_fn=self.log_line.emit)
+            _upload_with_retry(storage, enc_path, enc_name, _progress_cb, log_fn=self.log_line.emit, worker=self)
             self.progress.emit(90)
 
             self.log_line.emit(f"[{timestamp}] Applying retention policy...")
@@ -77,7 +77,7 @@ class BackupWorker(QThread):
             self.backup_done.emit(True, msg)
 
 
-def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, progress_cb, log_fn=None) -> None:
+def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, progress_cb, log_fn=None, worker=None) -> None:
     import time
     delays = [5, 15, 45]
     for attempt, delay in enumerate(delays):
@@ -89,7 +89,12 @@ def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, 
                 raise
             if log_fn:
                 log_fn(f"Upload attempt {attempt + 1} failed ({exc}), retrying in {delay}s...")
-            time.sleep(delay)
+            # Sleep in 1-second slices so a quit request is detected promptly.
+            deadline = time.monotonic() + delay
+            while time.monotonic() < deadline:
+                if worker and worker.isInterruptionRequested():
+                    raise InterruptedError("Backup cancelled")
+                time.sleep(min(1.0, deadline - time.monotonic()))
 
 
 def _zip_folders(folders: list, zip_path: str) -> None:

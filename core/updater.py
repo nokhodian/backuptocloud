@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import ssl
 import subprocess
 import sys
@@ -75,12 +76,21 @@ def download_update(
     download_url: str,
     checksum_url: str | None = None,
     progress_cb=None,
+    worker=None,
 ) -> str | None:
     """
-    Downloads the new .exe and verifies its SHA-256 if checksum_url is provided.
+    Downloads the new .exe and verifies its SHA-256.
+    checksum_url is required — returns None if absent (no unverified installs).
     progress_cb receives (bytes_downloaded, total_bytes).
+    worker is a QThread whose isInterruptionRequested() is polled during download.
     Returns the verified file path, or None on any failure (including hash mismatch).
+    Cleans up its temp directory on any failure; caller owns the directory on success.
     """
+    if not checksum_url:
+        logging.error("Update rejected: no checksum asset in release — refusing unverified install")
+        return None
+
+    tmp_dir = None
     try:
         _validate_download_url(download_url)
         tmp_dir = tempfile.mkdtemp(prefix="backupsystem_update_")
@@ -92,6 +102,9 @@ def download_update(
             downloaded = 0
             with open(new_exe, "wb") as f:
                 while True:
+                    if worker and worker.isInterruptionRequested():
+                        shutil.rmtree(tmp_dir, ignore_errors=True)
+                        return None
                     chunk = resp.read(65536)
                     if not chunk:
                         break
@@ -100,21 +113,35 @@ def download_update(
                     if progress_cb and total:
                         progress_cb(downloaded, total)
 
-        if checksum_url:
-            _validate_download_url(checksum_url)
-            sha_req = urllib.request.Request(
-                checksum_url, headers={"User-Agent": "BackupSystem-Updater"}
-            )
-            with urllib.request.urlopen(sha_req, timeout=30) as resp:
-                # Accept "HASH  filename" or bare "HASH" format
-                expected_hex = resp.read().decode("utf-8").split()[0]
-            if not _verify_sha256(new_exe, expected_hex):
-                logging.error("SHA-256 verification failed for downloaded update — aborting")
-                os.remove(new_exe)
-                return None
+        _validate_download_url(checksum_url)
+        sha_req = urllib.request.Request(
+            checksum_url, headers={"User-Agent": "BackupSystem-Updater"}
+        )
+        with urllib.request.urlopen(sha_req, timeout=30) as resp:
+            checksum_text = resp.read().decode("utf-8")
+        # Handle both single-entry ("HASH  filename") and multi-entry sha256sums.txt.
+        # Find the line referencing BackupSystem.exe (case-insensitive).
+        expected_hex = None
+        for line in checksum_text.splitlines():
+            parts = line.split()
+            if len(parts) >= 1:
+                if len(parts) == 1 or "backupsystem.exe" in parts[-1].lower():
+                    expected_hex = parts[0]
+                    break
+        if not expected_hex:
+            logging.error("SHA-256 checksum file did not contain a hash for BackupSystem.exe")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+        if not _verify_sha256(new_exe, expected_hex):
+            logging.error("SHA-256 verification failed for downloaded update — aborting")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
-        return new_exe
-    except Exception:
+        return new_exe  # caller (install_update) owns tmp_dir until the .bat runs
+    except Exception as exc:
+        logging.error("Update download failed: %s", exc)
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
 
 

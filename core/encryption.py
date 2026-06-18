@@ -1,6 +1,7 @@
 # core/encryption.py
 import os
 import struct
+import tempfile
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -50,9 +51,11 @@ def encrypt_file(src_path: str, dst_path: str, password: str) -> None:
 
 
 def decrypt_file(src_path: str, dst_path: str, password: str) -> None:
-    # Decrypt to a temp file first; rename only after all chunks authenticate.
-    # This prevents partial plaintext from landing at dst_path on a bad file.
-    tmp_path = dst_path + ".tmp"
+    # Decrypt to an unpredictable temp file in the same directory as dst_path so
+    # os.replace() is atomic (same filesystem). Rename only after all chunks
+    # authenticate; delete the temp file on any error.
+    dst_dir = os.path.dirname(dst_path) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dst_dir)
     try:
         with open(src_path, "rb") as inp:
             salt = inp.read(_SALT_SIZE)
@@ -60,7 +63,8 @@ def decrypt_file(src_path: str, dst_path: str, password: str) -> None:
             key = _derive_key(password, salt)
             aesgcm = AESGCM(key)
 
-            with open(tmp_path, "wb") as out:
+            with os.fdopen(tmp_fd, "wb") as out:
+                tmp_fd = None  # fdopen took ownership
                 for _ in range(num_chunks):
                     nonce = inp.read(_NONCE_SIZE)
                     chunk_len = struct.unpack(">I", inp.read(4))[0]
@@ -69,6 +73,8 @@ def decrypt_file(src_path: str, dst_path: str, password: str) -> None:
 
         os.replace(tmp_path, dst_path)
     except Exception:
+        if tmp_fd is not None:
+            os.close(tmp_fd)
         try:
             os.remove(tmp_path)
         except OSError:
