@@ -256,7 +256,10 @@ class MainWindow(QMainWindow):
             self._schedule_combo.setCurrentIndex(idx)
         t = QTime.fromString(self._config.get("schedule_time", "02:00"), "HH:mm")
         self._time_edit.setTime(t if t.isValid() else QTime(2, 0))
-        self._retention_spin.setValue(int(self._config.get("retention_count") or 30))
+        try:
+            self._retention_spin.setValue(max(1, int(self._config.get("retention_count") or 30)))
+        except (TypeError, ValueError):
+            self._retention_spin.setValue(30)
         self._on_schedule_type_changed(self._schedule_combo.currentText())
 
     def _collect_config(self) -> dict:
@@ -372,6 +375,8 @@ class MainWindow(QMainWindow):
         t_str = cfg.get("schedule_time", "02:00") or "02:00"
         try:
             h, m = (int(x) for x in t_str.split(":"))
+            if not (0 <= h < 24 and 0 <= m < 60):
+                raise ValueError("out of range")
         except (ValueError, AttributeError):
             h, m = 2, 0
 
