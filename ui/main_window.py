@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QTime
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton,
+    QListWidget, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QSpinBox, QTextEdit, QTimeEdit, QVBoxLayout,
     QWidget, QComboBox,
 )
@@ -109,23 +109,23 @@ class MainWindow(QMainWindow):
     def _build_folders_group(self) -> QGroupBox:
         box = QGroupBox("Backup Folders")
         layout = QVBoxLayout(box)
-        self._folder1_edit, row1 = self._folder_row()
-        self._folder2_edit, row2 = self._folder_row()
-        layout.addLayout(row1)
-        layout.addLayout(row2)
-        return box
 
-    def _folder_row(self):
-        edit = QLineEdit()
-        edit.setPlaceholderText("Click Browse to choose a folder…")
-        edit.setReadOnly(True)
-        btn = QPushButton("Browse")
-        btn.setFixedWidth(80)
-        btn.clicked.connect(lambda: self._browse_folder(edit))
-        row = QHBoxLayout()
-        row.addWidget(edit)
-        row.addWidget(btn)
-        return edit, row
+        self._folders_list = QListWidget()
+        self._folders_list.setFixedHeight(100)
+        self._folders_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        layout.addWidget(self._folders_list)
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("+ Add Folder")
+        add_btn.clicked.connect(self._on_add_folder)
+        remove_btn = QPushButton("− Remove Selected")
+        remove_btn.clicked.connect(self._on_remove_folder)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        return box
 
     def _build_credentials_group(self) -> QGroupBox:
         box = QGroupBox("IONOS Object Storage Credentials")
@@ -244,8 +244,9 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------- config <-> UI
 
     def _load_config_to_ui(self):
-        self._folder1_edit.setText(self._config.get("folder1", ""))
-        self._folder2_edit.setText(self._config.get("folder2", ""))
+        self._folders_list.clear()
+        for folder in self._config.get("folders", []):
+            self._folders_list.addItem(folder)
         self._endpoint_edit.setText(self._config.get("ionos_endpoint", ""))
         self._bucket_edit.setText(self._config.get("ionos_bucket", ""))
         self._access_key_edit.setText(self._config.get("ionos_access_key", ""))
@@ -264,8 +265,8 @@ class MainWindow(QMainWindow):
 
     def _collect_config(self) -> dict:
         cfg = dict(self._config)
-        cfg["folder1"] = self._folder1_edit.text()
-        cfg["folder2"] = self._folder2_edit.text()
+        cfg["folders"] = [self._folders_list.item(i).text()
+                          for i in range(self._folders_list.count())]
         cfg["ionos_endpoint"] = self._endpoint_edit.text().strip()
         cfg["ionos_bucket"] = self._bucket_edit.text().strip()
         cfg["ionos_access_key"] = self._access_key_edit.text().strip()
@@ -277,10 +278,19 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- slots
 
-    def _browse_folder(self, edit: QLineEdit):
-        path = QFileDialog.getExistingDirectory(self, "Select Folder")
-        if path:
-            edit.setText(path)
+    def _on_add_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Folder to Back Up")
+        if not path:
+            return
+        # Prevent duplicates.
+        existing = [self._folders_list.item(i).text() for i in range(self._folders_list.count())]
+        if path not in existing:
+            self._folders_list.addItem(path)
+
+    def _on_remove_folder(self):
+        row = self._folders_list.currentRow()
+        if row >= 0:
+            self._folders_list.takeItem(row)
 
     def _on_schedule_type_changed(self, text: str):
         self._time_edit.setVisible(text in ("Daily", "Weekly"))
@@ -320,6 +330,9 @@ class MainWindow(QMainWindow):
 
     def _on_backup_now(self):
         if self._worker and self._worker.isRunning():
+            return
+        if self._folders_list.count() == 0:
+            QMessageBox.warning(self, "No Folders", "Add at least one folder to back up.")
             return
         if not self._password_edit.text():
             QMessageBox.warning(self, "Password Required", "Enter your encryption password before running a backup.")

@@ -31,8 +31,7 @@ class BackupWorker(QThread):
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
         enc_name = f"backup-{timestamp}.zip.enc"
 
-        folders = [cfg.get("folder1", ""), cfg.get("folder2", "")]
-        valid_folders = [f for f in folders if f and os.path.isdir(f)]
+        valid_folders = [f for f in cfg.get("folders", []) if f and os.path.isdir(f)]
         if not valid_folders:
             raise ValueError("No valid folders to back up. Check your folder settings.")
 

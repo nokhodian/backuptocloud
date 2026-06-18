@@ -15,8 +15,7 @@ _CREDENTIAL_KEYS = ("ionos_access_key", "ionos_secret_key")
 _PASSWORD_KEY = "encryption_password"
 
 DEFAULT_CONFIG = {
-    "folder1": "",
-    "folder2": "",
+    "folders": [],
     "ionos_endpoint": "",
     "ionos_bucket": "",
     "ionos_access_key": "",
@@ -75,6 +74,15 @@ def load_config() -> dict:
         except (json.JSONDecodeError, OSError) as exc:
             logging.warning("Config file unreadable (%s) — starting with defaults", exc)
             cfg = dict(DEFAULT_CONFIG)
+
+    # Migrate old folder1/folder2 keys to the folders list.
+    if "folder1" in cfg or "folder2" in cfg:
+        migrated = [f for f in [cfg.pop("folder1", ""), cfg.pop("folder2", "")] if f]
+        if migrated and not cfg.get("folders"):
+            cfg["folders"] = migrated
+
+    if not isinstance(cfg.get("folders"), list):
+        cfg["folders"] = []
 
     for key in _CREDENTIAL_KEYS:
         value = _keyring_get(key)
