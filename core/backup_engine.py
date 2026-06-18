@@ -17,7 +17,7 @@ class BackupWorker(QThread):
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
-        self._config = config
+        self._config = dict(config)  # own copy so caller's pop() doesn't affect us
 
     def run(self):
         try:
@@ -107,7 +107,9 @@ def _zip_folders(folders: list, zip_path: str) -> None:
             for root, _dirs, files in os.walk(folder):
                 for filename in files:
                     full_path = os.path.join(root, filename)
-                    arcname = os.path.join(safe_prefix, os.path.relpath(full_path, folder))
+                    # ZIP spec requires forward slashes; normalize for cross-platform extractors.
+                    rel = os.path.relpath(full_path, folder).replace("\\", "/")
+                    arcname = f"{safe_prefix}/{rel}"
                     zf.write(full_path, arcname)
 
 

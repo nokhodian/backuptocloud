@@ -38,9 +38,12 @@ class IONOSStorage:
         self._client.upload_file(local_path, self._bucket, object_key, Callback=_callback)
 
     def list_backups(self) -> list:
-        response = self._client.list_objects_v2(Bucket=self._bucket, Prefix="backup-")
-        contents = response.get("Contents", [])
-        return sorted(obj["Key"] for obj in contents)
+        keys = []
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self._bucket, Prefix="backup-"):
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+        return sorted(keys)
 
     def delete(self, object_key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=object_key)
