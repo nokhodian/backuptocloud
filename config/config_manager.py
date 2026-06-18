@@ -63,13 +63,18 @@ def _keyring_delete(key: str) -> None:
 
 
 def load_config() -> dict:
+    import logging
     path = _config_path()
     if not path.exists():
         cfg = dict(DEFAULT_CONFIG)
     else:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        cfg = {**DEFAULT_CONFIG, **data}
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            cfg = {**DEFAULT_CONFIG, **data}
+        except (json.JSONDecodeError, OSError) as exc:
+            logging.warning("Config file unreadable (%s) — starting with defaults", exc)
+            cfg = dict(DEFAULT_CONFIG)
 
     for key in _CREDENTIAL_KEYS:
         value = _keyring_get(key)

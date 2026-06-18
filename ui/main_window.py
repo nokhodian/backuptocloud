@@ -29,13 +29,16 @@ class _ConnectionTestThread(QThread):
         self._cfg = cfg
 
     def run(self):
-        storage = IONOSStorage(
-            self._cfg["ionos_endpoint"],
-            self._cfg["ionos_bucket"],
-            self._cfg["ionos_access_key"],
-            self._cfg["ionos_secret_key"],
-        )
-        self.result.emit(storage.test_connection())
+        try:
+            storage = IONOSStorage(
+                self._cfg["ionos_endpoint"],
+                self._cfg["ionos_bucket"],
+                self._cfg["ionos_access_key"],
+                self._cfg["ionos_secret_key"],
+            )
+            self.result.emit(storage.test_connection())
+        except Exception:
+            self.result.emit(False)
 
 
 class _UpdateCheckThread(QThread):
