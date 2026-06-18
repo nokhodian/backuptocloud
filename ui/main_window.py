@@ -256,7 +256,7 @@ class MainWindow(QMainWindow):
             self._schedule_combo.setCurrentIndex(idx)
         t = QTime.fromString(self._config.get("schedule_time", "02:00"), "HH:mm")
         self._time_edit.setTime(t if t.isValid() else QTime(2, 0))
-        self._retention_spin.setValue(self._config.get("retention_count", 30))
+        self._retention_spin.setValue(int(self._config.get("retention_count") or 30))
         self._on_schedule_type_changed(self._schedule_combo.currentText())
 
     def _collect_config(self) -> dict:
@@ -369,8 +369,11 @@ class MainWindow(QMainWindow):
         cfg = self._config
         now = datetime.now()
         stype = cfg.get("schedule_type", "daily")
-        t_str = cfg.get("schedule_time", "02:00")
-        h, m = (int(x) for x in t_str.split(":"))
+        t_str = cfg.get("schedule_time", "02:00") or "02:00"
+        try:
+            h, m = (int(x) for x in t_str.split(":"))
+        except (ValueError, AttributeError):
+            h, m = 2, 0
 
         if stype == "hourly":
             self._next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
