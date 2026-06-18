@@ -11,7 +11,10 @@ from PyQt6.QtWidgets import (
     QWidget, QComboBox,
 )
 
-from config.config_manager import load_config, save_config
+from config.config_manager import (
+    load_config, save_config,
+    load_encryption_password, save_encryption_password,
+)
 from core.backup_engine import BackupWorker
 from core.storage import IONOSStorage
 from core.updater import check_for_update, download_update, install_update
@@ -35,7 +38,7 @@ class _ConnectionTestThread(QThread):
 
 
 class _UpdateCheckThread(QThread):
-    update_available = pyqtSignal(str, str)   # (latest_version, download_url)
+    update_available = pyqtSignal(str, str, str)  # (latest_version, download_url, checksum_url)
     no_update = pyqtSignal()
 
     def __init__(self, current_version: str, parent=None):
@@ -43,26 +46,27 @@ class _UpdateCheckThread(QThread):
         self._current_version = current_version
 
     def run(self):
-        latest, url = check_for_update(self._current_version)
+        latest, url, checksum_url = check_for_update(self._current_version)
         if latest:
-            self.update_available.emit(latest, url)
+            self.update_available.emit(latest, url, checksum_url or "")
         else:
             self.no_update.emit()
 
 
 class _UpdateDownloadThread(QThread):
-    progress = pyqtSignal(int)          # 0-100
-    done = pyqtSignal(str)              # path to downloaded exe, or "" on failure
+    progress = pyqtSignal(int)   # 0-100
+    done = pyqtSignal(str)       # path to verified exe, or "" on failure/hash mismatch
 
-    def __init__(self, download_url: str, parent=None):
+    def __init__(self, download_url: str, checksum_url: str = "", parent=None):
         super().__init__(parent)
         self._url = download_url
+        self._checksum_url = checksum_url or None
 
     def run(self):
         def _cb(downloaded, total):
             self.progress.emit(int(downloaded * 100 / total))
 
-        path = download_update(self._url, progress_cb=_cb)
+        path = download_update(self._url, checksum_url=self._checksum_url, progress_cb=_cb)
         self.done.emit(path or "")
 
 
@@ -261,7 +265,7 @@ class MainWindow(QMainWindow):
         cfg["ionos_secret_key"] = self._secret_key_edit.text().strip()
         cfg["schedule_type"] = self._schedule_combo.currentText().lower()
         cfg["schedule_time"] = self._time_edit.time().toString("HH:mm")
-        cfg["retention_count"] = self._retention_spin.value()
+        cfg["retention_count"] = max(1, self._retention_spin.value())
         return cfg
 
     # ---------------------------------------------------------------- slots
@@ -277,7 +281,14 @@ class MainWindow(QMainWindow):
 
     def _on_save(self):
         self._config = self._collect_config()
-        save_config(self._config)
+        try:
+            save_config(self._config)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+            return
+        pwd = self._password_edit.text()
+        if pwd:
+            save_encryption_password(pwd)
         self._restart_scheduler()
         self._status_label.setText("Settings saved.")
 
@@ -369,11 +380,12 @@ class MainWindow(QMainWindow):
             if self._worker and self._worker.isRunning():
                 self._append_log("Scheduled backup skipped — previous backup still running.")
                 return
-            if not self._password_edit.text():
-                self._append_log("Scheduled backup skipped — password not entered.")
+            password = self._password_edit.text() or load_encryption_password()
+            if not password:
+                self._append_log("Scheduled backup skipped — password not set.")
                 return
             cfg = self._collect_config()
-            cfg["password"] = self._password_edit.text()
+            cfg["password"] = password
             self._start_backup(cfg)
 
     # --------------------------------------------------------- auto-update
@@ -398,24 +410,25 @@ class MainWindow(QMainWindow):
         self._update_btn.setText("Check for Updates")
         QMessageBox.information(self, "Up to date", f"You are running the latest version (v{self._version}).")
 
-    def _on_update_available(self, latest: str, url: str):
+    def _on_update_available(self, latest: str, url: str, checksum_url: str):
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Check for Updates")
+        verified = " (SHA-256 verified)" if checksum_url else " (no checksum — install with caution)"
         reply = QMessageBox.question(
             self,
             "Update Available",
-            f"Version {latest} is available (you have v{self._version}).\n\nDownload and install now?",
+            f"Version {latest} is available (you have v{self._version}).{verified}\n\nDownload and install now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._start_download(url)
+            self._start_download(url, checksum_url)
 
-    def _start_download(self, url: str):
+    def _start_download(self, url: str, checksum_url: str = ""):
         self._update_btn.setEnabled(False)
         self._update_btn.setText("Downloading…")
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
-        self._dl_thread = _UpdateDownloadThread(url, parent=self)
+        self._dl_thread = _UpdateDownloadThread(url, checksum_url=checksum_url, parent=self)
         self._dl_thread.progress.connect(self._progress_bar.setValue)
         self._dl_thread.done.connect(self._on_download_done)
         self._dl_thread.start()
@@ -425,13 +438,17 @@ class MainWindow(QMainWindow):
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Check for Updates")
         if not path:
-            QMessageBox.critical(self, "Update Failed", "Could not download the update. Please try again later.")
+            QMessageBox.critical(
+                self, "Update Failed",
+                "Could not download or verify the update.\n"
+                "The file may have failed its integrity check. Please try again later."
+            )
             return
         self._update_exe_path = path
         reply = QMessageBox.question(
             self,
             "Install Update",
-            "Download complete. The application will restart to apply the update.\n\nRestart now?",
+            "Download complete and verified. The application will restart to apply the update.\n\nRestart now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -446,6 +463,30 @@ class MainWindow(QMainWindow):
                 )
 
     # -------------------------------------------------------- window lifecycle
+
+    def request_quit(self):
+        """Graceful quit: drain any running workers before exiting."""
+        from PyQt6.QtWidgets import QApplication
+        running = []
+        if self._worker and self._worker.isRunning():
+            running.append("a backup")
+        if hasattr(self, "_dl_thread") and self._dl_thread.isRunning():
+            running.append("an update download")
+        if running:
+            reply = QMessageBox.question(
+                self, "Quit",
+                f"BackupSystem is currently running {' and '.join(running)}.\n\nQuit anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        for thread in [self._worker,
+                       getattr(self, "_dl_thread", None),
+                       getattr(self, "_update_check_thread", None)]:
+            if thread and thread.isRunning():
+                thread.quit()
+                thread.wait(3000)
+        QApplication.quit()
 
     def closeEvent(self, event):
         event.ignore()

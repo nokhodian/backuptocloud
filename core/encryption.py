@@ -26,39 +26,51 @@ def encrypt_file(src_path: str, dst_path: str, password: str) -> None:
     key = _derive_key(password, salt)
     aesgcm = AESGCM(key)
 
-    # First pass: count chunks
-    chunks = []
-    with open(src_path, "rb") as f:
+    with open(src_path, "rb") as inp, open(dst_path, "wb") as out:
+        out.write(salt)
+        # Write placeholder for chunk count; will seek back and overwrite.
+        chunk_count_offset = out.tell()
+        out.write(struct.pack(">I", 0))
+
+        count = 0
         while True:
-            chunk = f.read(_CHUNK_SIZE)
+            chunk = inp.read(_CHUNK_SIZE)
             if not chunk:
                 break
-            chunks.append(chunk)
-
-    with open(dst_path, "wb") as out:
-        # Write header: salt + chunk count
-        out.write(salt)
-        out.write(struct.pack(">I", len(chunks)))
-
-        for chunk in chunks:
             nonce = os.urandom(_NONCE_SIZE)
             ciphertext = aesgcm.encrypt(nonce, chunk, None)
             out.write(nonce)
             out.write(struct.pack(">I", len(ciphertext)))
             out.write(ciphertext)
+            count += 1
+
+        # Patch the placeholder with the real chunk count.
+        out.seek(chunk_count_offset)
+        out.write(struct.pack(">I", count))
 
 
 def decrypt_file(src_path: str, dst_path: str, password: str) -> None:
-    with open(src_path, "rb") as inp:
-        salt = inp.read(_SALT_SIZE)
-        num_chunks = struct.unpack(">I", inp.read(4))[0]
-        key = _derive_key(password, salt)
-        aesgcm = AESGCM(key)
+    # Decrypt to a temp file first; rename only after all chunks authenticate.
+    # This prevents partial plaintext from landing at dst_path on a bad file.
+    tmp_path = dst_path + ".tmp"
+    try:
+        with open(src_path, "rb") as inp:
+            salt = inp.read(_SALT_SIZE)
+            num_chunks = struct.unpack(">I", inp.read(4))[0]
+            key = _derive_key(password, salt)
+            aesgcm = AESGCM(key)
 
-        with open(dst_path, "wb") as out:
-            for _ in range(num_chunks):
-                nonce = inp.read(_NONCE_SIZE)
-                chunk_len = struct.unpack(">I", inp.read(4))[0]
-                ciphertext = inp.read(chunk_len)
-                plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-                out.write(plaintext)
+            with open(tmp_path, "wb") as out:
+                for _ in range(num_chunks):
+                    nonce = inp.read(_NONCE_SIZE)
+                    chunk_len = struct.unpack(">I", inp.read(4))[0]
+                    ciphertext = inp.read(chunk_len)
+                    out.write(aesgcm.decrypt(nonce, ciphertext, None))
+
+        os.replace(tmp_path, dst_path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise

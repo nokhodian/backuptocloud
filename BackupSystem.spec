@@ -7,7 +7,12 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('assets/icon.png', 'assets')],
-    hiddenimports=['boto3', 'botocore', 'cryptography'],
+    hiddenimports=[
+        'boto3', 'botocore', 'cryptography',
+        'keyring.backends.Windows',
+        'keyring.backends.fail',
+        'keyring.core',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

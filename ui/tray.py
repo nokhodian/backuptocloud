@@ -40,5 +40,4 @@ class TrayIcon(QSystemTrayIcon):
             self._show_window()
 
     def _on_quit(self):
-        from PyQt6.QtWidgets import QApplication
-        QApplication.quit()
+        self._main_window.request_quit()

@@ -1,12 +1,17 @@
+import hashlib
 import json
+import logging
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
 import urllib.request
+from urllib.parse import urlparse
 
 GITHUB_REPO = "nokhodian/backuptocloud"
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+_ALLOWED_DOWNLOAD_HOSTS = {"objects.githubusercontent.com", "github.com"}
 
 
 def _parse_version(v: str) -> tuple:
@@ -16,37 +21,71 @@ def _parse_version(v: str) -> tuple:
         return (0, 0, 0)
 
 
+def _validate_download_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"Download URL must use HTTPS, got: {parsed.scheme!r}")
+    if parsed.netloc not in _ALLOWED_DOWNLOAD_HOSTS:
+        raise ValueError(f"Download URL host not allowed: {parsed.netloc!r}")
+
+
+def _verify_sha256(file_path: str, expected_hex: str) -> bool:
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest().lower() == expected_hex.strip().lower()
+
+
 def fetch_latest_release() -> dict:
     req = urllib.request.Request(API_URL, headers={"User-Agent": "BackupSystem-Updater"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
 
-def check_for_update(current_version: str) -> tuple[str | None, str | None]:
-    """Returns (latest_version, download_url) if a newer version exists, else (None, None)."""
+def check_for_update(current_version: str) -> tuple[str | None, str | None, str | None]:
+    """Returns (latest_version, download_url, checksum_url) or (None, None, None)."""
     try:
         release = fetch_latest_release()
         latest_tag = release.get("tag_name", "").lstrip("v")
         if not latest_tag:
-            return None, None
+            return None, None, None
         if _parse_version(latest_tag) > _parse_version(current_version):
-            for asset in release.get("assets", []):
-                if asset["name"].lower().endswith(".exe"):
-                    return latest_tag, asset["browser_download_url"]
+            assets = release.get("assets", [])
+            exe_url = None
+            sha_url = None
+            for asset in assets:
+                name = asset["name"].lower()
+                if name.endswith(".exe"):
+                    exe_url = asset["browser_download_url"]
+                elif name.endswith(".exe.sha256") or name == "sha256sums.txt":
+                    sha_url = asset["browser_download_url"]
+            if exe_url:
+                return latest_tag, exe_url, sha_url
+    except ssl.SSLCertVerificationError as e:
+        logging.error("TLS certificate validation failed during update check: %s", e)
+    except OSError:
+        pass
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
-def download_update(download_url: str, progress_cb=None) -> str | None:
+def download_update(
+    download_url: str,
+    checksum_url: str | None = None,
+    progress_cb=None,
+) -> str | None:
     """
-    Downloads the new .exe to a temp directory.
+    Downloads the new .exe and verifies its SHA-256 if checksum_url is provided.
     progress_cb receives (bytes_downloaded, total_bytes).
-    Returns the path to the downloaded file, or None on failure.
+    Returns the verified file path, or None on any failure (including hash mismatch).
     """
     try:
+        _validate_download_url(download_url)
         tmp_dir = tempfile.mkdtemp(prefix="backupsystem_update_")
         new_exe = os.path.join(tmp_dir, "BackupSystem_new.exe")
+
         req = urllib.request.Request(download_url, headers={"User-Agent": "BackupSystem-Updater"})
         with urllib.request.urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length", 0))
@@ -60,6 +99,20 @@ def download_update(download_url: str, progress_cb=None) -> str | None:
                     downloaded += len(chunk)
                     if progress_cb and total:
                         progress_cb(downloaded, total)
+
+        if checksum_url:
+            _validate_download_url(checksum_url)
+            sha_req = urllib.request.Request(
+                checksum_url, headers={"User-Agent": "BackupSystem-Updater"}
+            )
+            with urllib.request.urlopen(sha_req, timeout=30) as resp:
+                # Accept "HASH  filename" or bare "HASH" format
+                expected_hex = resp.read().decode("utf-8").split()[0]
+            if not _verify_sha256(new_exe, expected_hex):
+                logging.error("SHA-256 verification failed for downloaded update — aborting")
+                os.remove(new_exe)
+                return None
+
         return new_exe
     except Exception:
         return None
