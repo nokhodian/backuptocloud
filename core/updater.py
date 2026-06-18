@@ -153,7 +153,10 @@ def download_update(
 
 def install_update(new_exe_path: str) -> bool:
     """
-    Writes a .bat that replaces the running .exe after exit, then launches it.
+    Writes a .bat that waits for this process to exit (by PID), replaces the
+    running .exe, then launches the new one. PID-based wait avoids the
+    "Failed to load Python DLL" crash that a fixed timeout caused when the old
+    PyInstaller extraction dir was still in use at launch time.
     Only works when running as a frozen PyInstaller bundle.
     Returns True if the update was scheduled (app should now quit).
     """
@@ -161,12 +164,22 @@ def install_update(new_exe_path: str) -> bool:
         return False
 
     current_exe = os.path.abspath(sys.executable)
+    old_pid = os.getpid()
     bat_dir = os.path.dirname(new_exe_path)
     bat_path = os.path.join(bat_dir, "do_update.bat")
 
+    # Wait until the old PID is gone, then replace and restart.
+    # tasklist exits with errorlevel 1 when the PID is not found.
     bat_lines = [
         "@echo off",
-        "timeout /t 2 /nobreak >nul",
+        f":WAIT",
+        f'tasklist /FI "PID eq {old_pid}" 2>NUL | find "{old_pid}" >NUL',
+        "if not errorlevel 1 (",
+        "    timeout /t 1 /nobreak >nul",
+        "    goto WAIT",
+        ")",
+        # Extra half-second so the OS releases any DLL file locks.
+        "timeout /t 1 /nobreak >nul",
         f'move /Y "{new_exe_path}" "{current_exe}"',
         f'start "" "{current_exe}"',
         'del "%~f0"',
