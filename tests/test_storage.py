@@ -13,17 +13,22 @@ def mock_boto_client():
 
 
 def make_storage(mock_boto_client):
+    # Old positional order: endpoint, bucket, access_key, secret_key
     return IONOSStorage("s3.example.com", "my-bucket", "ACCESS", "SECRET")
 
 
 def test_list_backups_returns_sorted_keys(mock_boto_client):
-    mock_boto_client.list_objects_v2.return_value = {
-        "Contents": [
+    page_data = [
+        {"Contents": [
             {"Key": "backup-2026-06-17-02-00.zip.enc"},
             {"Key": "backup-2026-06-15-02-00.zip.enc"},
             {"Key": "backup-2026-06-16-02-00.zip.enc"},
-        ]
-    }
+        ]}
+    ]
+    mock_paginator = MagicMock()
+    mock_paginator.paginate.return_value = page_data
+    mock_boto_client.get_paginator.return_value = mock_paginator
+
     storage = make_storage(mock_boto_client)
     keys = storage.list_backups()
     assert keys == [
@@ -34,7 +39,10 @@ def test_list_backups_returns_sorted_keys(mock_boto_client):
 
 
 def test_list_backups_returns_empty_when_no_objects(mock_boto_client):
-    mock_boto_client.list_objects_v2.return_value = {}
+    mock_paginator = MagicMock()
+    mock_paginator.paginate.return_value = [{}]
+    mock_boto_client.get_paginator.return_value = mock_paginator
+
     storage = make_storage(mock_boto_client)
     assert storage.list_backups() == []
 

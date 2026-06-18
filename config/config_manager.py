@@ -1,4 +1,3 @@
-# config/config_manager.py
 import json
 import os
 from pathlib import Path
@@ -11,15 +10,48 @@ except ImportError:
     _KEYRING_AVAILABLE = False
 
 _KEYRING_SERVICE = "BackupSystem"
-_CREDENTIAL_KEYS = ("ionos_access_key", "ionos_secret_key")
+
+# All keys whose values live in the OS keyring, never on disk.
+_CREDENTIAL_KEYS = (
+    "s3_access_key",
+    "s3_secret_key",
+    "onedrive_access_token",
+    "gdrive_credentials_json",
+    "dropbox_access_token",
+    "azure_connection_string",
+    "sftp_password",
+)
 _PASSWORD_KEY = "encryption_password"
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict = {
     "folders": [],
-    "ionos_endpoint": "",
-    "ionos_bucket": "",
-    "ionos_access_key": "",
-    "ionos_secret_key": "",
+    # Storage provider selection
+    "storage_provider": "ionos",
+    # S3-compatible (IONOS, AWS S3, MinIO, Backblaze B2)
+    "s3_endpoint": "",      # hostname only; empty = AWS default
+    "s3_region": "",        # e.g. "us-east-1"
+    "s3_bucket": "",
+    "s3_access_key": "",    # keyring
+    "s3_secret_key": "",    # keyring
+    # Microsoft OneDrive
+    "onedrive_folder": "BackupSystem",
+    "onedrive_access_token": "",  # keyring
+    # Google Drive
+    "gdrive_folder": "BackupSystem",
+    "gdrive_credentials_json": "",  # keyring (full token JSON)
+    # Dropbox
+    "dropbox_folder": "/BackupSystem",
+    "dropbox_access_token": "",  # keyring
+    # Azure Blob Storage
+    "azure_container": "backups",
+    "azure_connection_string": "",  # keyring
+    # SFTP
+    "sftp_host": "",
+    "sftp_port": "22",
+    "sftp_username": "",
+    "sftp_remote_dir": "/backups",
+    "sftp_password": "",  # keyring
+    # Backup settings
     "schedule_type": "daily",
     "schedule_time": "02:00",
     "retention_count": 30,
@@ -42,7 +74,6 @@ def _keyring_get(key: str) -> str | None:
 
 
 def _keyring_set(key: str, value: str) -> bool:
-    """Returns True on success, False if keyring is unavailable or raises."""
     if not _KEYRING_AVAILABLE:
         return False
     try:
@@ -84,6 +115,28 @@ def load_config() -> dict:
     if not isinstance(cfg.get("folders"), list):
         cfg["folders"] = []
 
+    # Migrate old ionos_ JSON keys to new s3_ prefix.
+    if "ionos_endpoint" in cfg or "ionos_bucket" in cfg:
+        if not cfg.get("storage_provider"):
+            cfg["storage_provider"] = "ionos"
+        if not cfg.get("s3_endpoint"):
+            cfg["s3_endpoint"] = cfg.pop("ionos_endpoint", "")
+        else:
+            cfg.pop("ionos_endpoint", None)
+        if not cfg.get("s3_bucket"):
+            cfg["s3_bucket"] = cfg.pop("ionos_bucket", "")
+        else:
+            cfg.pop("ionos_bucket", None)
+
+    # Migrate old ionos_ keyring keys to new s3_ prefix.
+    for old_key, new_key in [("ionos_access_key", "s3_access_key"),
+                               ("ionos_secret_key", "s3_secret_key")]:
+        old_val = _keyring_get(old_key)
+        if old_val and not _keyring_get(new_key):
+            _keyring_set(new_key, old_val)
+            _keyring_delete(old_key)
+
+    # Load all credential keys from keyring.
     for key in _CREDENTIAL_KEYS:
         value = _keyring_get(key)
         if value is not None:
@@ -96,7 +149,6 @@ def save_config(config: dict) -> None:
     path = _config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Never write credentials or password to JSON regardless of keyring status.
     excluded = set(_CREDENTIAL_KEYS) | {"password"}
     safe = {k: v for k, v in config.items() if k not in excluded}
 
@@ -106,7 +158,7 @@ def save_config(config: dict) -> None:
             if not _keyring_set(key, value):
                 raise RuntimeError(
                     "Secure credential storage (keyring) is unavailable.\n"
-                    "Cannot save IONOS credentials safely.\n"
+                    "Cannot save credentials safely.\n"
                     "Please ensure the 'keyring' package and a keyring backend are installed."
                 )
         else:
@@ -117,7 +169,6 @@ def save_config(config: dict) -> None:
 
 
 def save_encryption_password(password: str) -> bool:
-    """Stores the encryption password in the OS keyring. Returns True on success."""
     if not password:
         _keyring_delete(_PASSWORD_KEY)
         return True
@@ -125,5 +176,4 @@ def save_encryption_password(password: str) -> bool:
 
 
 def load_encryption_password() -> str | None:
-    """Retrieves the stored encryption password, or None if not set."""
     return _keyring_get(_PASSWORD_KEY)

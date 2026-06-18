@@ -7,7 +7,7 @@ from typing import Callable, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.encryption import encrypt_file
-from core.storage import IONOSStorage
+from core.storage import get_storage
 
 
 class BackupWorker(QThread):
@@ -48,14 +48,17 @@ class BackupWorker(QThread):
             encrypt_file(zip_path, enc_path, cfg["password"])
             os.remove(zip_path)
 
-            self.log_line.emit(f"[{timestamp}] Uploading to IONOS...")
+            _PROVIDER_LABELS = {
+                "ionos": "IONOS", "aws_s3": "AWS S3", "minio": "MinIO",
+                "backblaze_b2": "Backblaze B2", "onedrive": "OneDrive",
+                "google_drive": "Google Drive", "dropbox": "Dropbox",
+                "azure_blob": "Azure Blob", "sftp": "SFTP",
+            }
+            provider = cfg.get("storage_provider", "ionos")
+            provider_label = _PROVIDER_LABELS.get(provider, provider)
+            self.log_line.emit(f"[{timestamp}] Uploading to {provider_label}...")
             self.progress.emit(50)
-            storage = IONOSStorage(
-                cfg["ionos_endpoint"],
-                cfg["ionos_bucket"],
-                cfg["ionos_access_key"],
-                cfg["ionos_secret_key"],
-            )
+            storage = get_storage(cfg)
             file_size = os.path.getsize(enc_path)
 
             def _progress_cb(transferred: int, total: int) -> None:
@@ -76,7 +79,7 @@ class BackupWorker(QThread):
             self.backup_done.emit(True, msg)
 
 
-def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, progress_cb, log_fn=None, worker=None) -> None:
+def _upload_with_retry(storage, local_path: str, object_key: str, progress_cb, log_fn=None, worker=None) -> None:
     import time
     delays = [5, 15, 45]
     for attempt, delay in enumerate(delays):
@@ -112,7 +115,7 @@ def _zip_folders(folders: list, zip_path: str) -> None:
                     zf.write(full_path, arcname)
 
 
-def _prune(storage: IONOSStorage, retention_count: int) -> None:
+def _prune(storage, retention_count: int) -> None:
     keys = storage.list_backups()
     excess = len(keys) - retention_count
     if excess > 0:

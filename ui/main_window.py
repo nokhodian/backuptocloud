@@ -8,7 +8,7 @@ from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QSpinBox, QTextEdit, QTimeEdit, QVBoxLayout,
+    QSpinBox, QStackedWidget, QTextEdit, QTimeEdit, QVBoxLayout,
     QWidget, QComboBox,
 )
 
@@ -17,8 +17,22 @@ from config.config_manager import (
     load_encryption_password, save_encryption_password,
 )
 from core.backup_engine import BackupWorker
-from core.storage import IONOSStorage
+from core.storage import get_storage
 from core.updater import check_for_update, download_update, install_update
+
+# (display_name, config_value, stack_page_index)
+_PROVIDERS = [
+    ("IONOS Object Storage",  "ionos",        0),
+    ("AWS S3",                "aws_s3",        0),
+    ("MinIO / Generic S3",    "minio",         0),
+    ("Backblaze B2",          "backblaze_b2",  0),
+    ("Microsoft OneDrive",    "onedrive",      1),
+    ("Google Drive",          "google_drive",  2),
+    ("Dropbox",               "dropbox",       3),
+    ("Azure Blob Storage",    "azure_blob",    4),
+    ("SFTP",                  "sftp",          5),
+]
+_VALUE_TO_IDX = {v: i for i, (_, v, _pg) in enumerate(_PROVIDERS)}
 
 
 class _ConnectionTestThread(QThread):
@@ -30,19 +44,14 @@ class _ConnectionTestThread(QThread):
 
     def run(self):
         try:
-            storage = IONOSStorage(
-                self._cfg["ionos_endpoint"],
-                self._cfg["ionos_bucket"],
-                self._cfg["ionos_access_key"],
-                self._cfg["ionos_secret_key"],
-            )
+            storage = get_storage(self._cfg)
             self.result.emit(storage.test_connection())
         except Exception:
             self.result.emit(False)
 
 
 class _UpdateCheckThread(QThread):
-    update_available = pyqtSignal(str, str, str)  # (latest_version, download_url, checksum_url)
+    update_available = pyqtSignal(str, str, str)
     no_update = pyqtSignal()
 
     def __init__(self, current_version: str, parent=None):
@@ -58,8 +67,8 @@ class _UpdateCheckThread(QThread):
 
 
 class _UpdateDownloadThread(QThread):
-    progress = pyqtSignal(int)   # 0-100
-    done = pyqtSignal(str)       # path to verified exe, or "" on failure/hash mismatch
+    progress = pyqtSignal(int)
+    done = pyqtSignal(str)
 
     def __init__(self, download_url: str, checksum_url: str = "", parent=None):
         super().__init__(parent)
@@ -70,7 +79,8 @@ class _UpdateDownloadThread(QThread):
         def _cb(downloaded, total):
             self.progress.emit(int(downloaded * 100 / total))
 
-        path = download_update(self._url, checksum_url=self._checksum_url, progress_cb=_cb, worker=self)
+        path = download_update(self._url, checksum_url=self._checksum_url,
+                               progress_cb=_cb, worker=self)
         self.done.emit(path or "")
 
 
@@ -92,7 +102,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         self.setWindowTitle(f"BackupSystem v{self._version}")
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(700)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -101,7 +111,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 14, 14, 14)
 
         layout.addWidget(self._build_folders_group())
-        layout.addWidget(self._build_credentials_group())
+        layout.addWidget(self._build_storage_group())
         layout.addWidget(self._build_settings_group())
         layout.addWidget(self._build_status_group())
         layout.addLayout(self._build_buttons_row())
@@ -127,38 +137,267 @@ class MainWindow(QMainWindow):
 
         return box
 
-    def _build_credentials_group(self) -> QGroupBox:
-        box = QGroupBox("IONOS Object Storage Credentials")
+    # ------------------------------------------------------------------ storage group
+
+    def _build_storage_group(self) -> QGroupBox:
+        box = QGroupBox("Cloud Storage")
         layout = QVBoxLayout(box)
 
-        row1 = QHBoxLayout()
-        self._endpoint_edit = self._labeled_input(row1, "Endpoint URL", "s3-eu-central-1.ionoscloud.com")
-        self._bucket_edit = self._labeled_input(row1, "Bucket Name", "my-backups")
+        provider_row = QHBoxLayout()
+        provider_row.addWidget(QLabel("Provider:"))
+        self._provider_combo = QComboBox()
+        for display, _val, _pg in _PROVIDERS:
+            self._provider_combo.addItem(display)
+        self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        provider_row.addWidget(self._provider_combo)
+        provider_row.addStretch()
+        layout.addLayout(provider_row)
 
-        row2 = QHBoxLayout()
-        self._access_key_edit = self._labeled_input(row2, "Access Key", "")
-        self._secret_key_edit = self._labeled_input(row2, "Secret Key", "", password=True)
+        self._storage_stack = QStackedWidget()
+        self._storage_stack.addWidget(self._build_s3_page())       # 0
+        self._storage_stack.addWidget(self._build_onedrive_page())  # 1
+        self._storage_stack.addWidget(self._build_gdrive_page())    # 2
+        self._storage_stack.addWidget(self._build_dropbox_page())   # 3
+        self._storage_stack.addWidget(self._build_azure_page())     # 4
+        self._storage_stack.addWidget(self._build_sftp_page())      # 5
+        layout.addWidget(self._storage_stack)
 
-        layout.addLayout(row1)
-        layout.addLayout(row2)
         return box
 
-    def _labeled_input(self, parent_layout, label: str, placeholder: str, password=False) -> QLineEdit:
-        col = QVBoxLayout()
-        col.addWidget(QLabel(label))
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        if password:
-            edit.setEchoMode(QLineEdit.EchoMode.Password)
-        col.addWidget(edit)
-        parent_layout.addLayout(col)
-        return edit
+    # -- S3-compatible page (IONOS / AWS S3 / MinIO / Backblaze B2) ----------
+
+    def _build_s3_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        row1 = QHBoxLayout()
+        ep_col = QVBoxLayout()
+        self._s3_endpoint_label = QLabel("Endpoint")
+        ep_col.addWidget(self._s3_endpoint_label)
+        self._s3_endpoint_edit = QLineEdit()
+        self._s3_endpoint_edit.setPlaceholderText("s3-eu-central-1.ionoscloud.com")
+        ep_col.addWidget(self._s3_endpoint_edit)
+        row1.addLayout(ep_col)
+
+        region_col = QVBoxLayout()
+        self._s3_region_label = QLabel("Region")
+        region_col.addWidget(self._s3_region_label)
+        self._s3_region_edit = QLineEdit()
+        self._s3_region_edit.setPlaceholderText("us-east-1")
+        region_col.addWidget(self._s3_region_edit)
+        row1.addLayout(region_col)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        bucket_col = QVBoxLayout()
+        bucket_col.addWidget(QLabel("Bucket Name"))
+        self._s3_bucket_edit = QLineEdit()
+        self._s3_bucket_edit.setPlaceholderText("my-backups")
+        bucket_col.addWidget(self._s3_bucket_edit)
+        row2.addLayout(bucket_col)
+        layout.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        key_col = QVBoxLayout()
+        key_col.addWidget(QLabel("Access Key"))
+        self._s3_access_key_edit = QLineEdit()
+        key_col.addWidget(self._s3_access_key_edit)
+        row3.addLayout(key_col)
+
+        secret_col = QVBoxLayout()
+        secret_col.addWidget(QLabel("Secret Key"))
+        self._s3_secret_key_edit = QLineEdit()
+        self._s3_secret_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        secret_col.addWidget(self._s3_secret_key_edit)
+        row3.addLayout(secret_col)
+        layout.addLayout(row3)
+
+        return page
+
+    # -- OneDrive page --------------------------------------------------------
+
+    def _build_onedrive_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        row1 = QHBoxLayout()
+        folder_col = QVBoxLayout()
+        folder_col.addWidget(QLabel("Backup Folder (OneDrive path)"))
+        self._onedrive_folder_edit = QLineEdit()
+        self._onedrive_folder_edit.setPlaceholderText("BackupSystem")
+        folder_col.addWidget(self._onedrive_folder_edit)
+        row1.addLayout(folder_col)
+        layout.addLayout(row1)
+
+        token_col = QVBoxLayout()
+        token_col.addWidget(QLabel("Access Token"))
+        self._onedrive_token_edit = QLineEdit()
+        self._onedrive_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._onedrive_token_edit.setPlaceholderText(
+            "Paste a Microsoft Graph API access token (Files.ReadWrite scope)"
+        )
+        token_col.addWidget(self._onedrive_token_edit)
+        hint = QLabel(
+            '<a href="https://learn.microsoft.com/en-us/graph/auth-v2-user">'
+            "How to obtain a token</a>"
+        )
+        hint.setOpenExternalLinks(True)
+        token_col.addWidget(hint)
+        layout.addLayout(token_col)
+
+        return page
+
+    # -- Google Drive page ----------------------------------------------------
+
+    def _build_gdrive_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        row1 = QHBoxLayout()
+        folder_col = QVBoxLayout()
+        folder_col.addWidget(QLabel("Backup Folder Name"))
+        self._gdrive_folder_edit = QLineEdit()
+        self._gdrive_folder_edit.setPlaceholderText("BackupSystem")
+        folder_col.addWidget(self._gdrive_folder_edit)
+        row1.addLayout(folder_col)
+        layout.addLayout(row1)
+
+        creds_col = QVBoxLayout()
+        creds_col.addWidget(QLabel("OAuth Credentials JSON"))
+        self._gdrive_creds_edit = QTextEdit()
+        self._gdrive_creds_edit.setFixedHeight(90)
+        self._gdrive_creds_edit.setPlaceholderText(
+            '{"access_token":"...","refresh_token":"...","client_id":"...","client_secret":"..."}'
+        )
+        creds_col.addWidget(self._gdrive_creds_edit)
+        hint = QLabel(
+            '<a href="https://developers.google.com/drive/api/quickstart/python">'
+            "How to create OAuth credentials</a>"
+        )
+        hint.setOpenExternalLinks(True)
+        creds_col.addWidget(hint)
+        layout.addLayout(creds_col)
+
+        return page
+
+    # -- Dropbox page ---------------------------------------------------------
+
+    def _build_dropbox_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        row1 = QHBoxLayout()
+        token_col = QVBoxLayout()
+        token_col.addWidget(QLabel("Access Token"))
+        self._dropbox_token_edit = QLineEdit()
+        self._dropbox_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._dropbox_token_edit.setPlaceholderText("Dropbox long-lived or short-lived access token")
+        token_col.addWidget(self._dropbox_token_edit)
+        row1.addLayout(token_col)
+
+        folder_col = QVBoxLayout()
+        folder_col.addWidget(QLabel("Backup Folder Path"))
+        self._dropbox_folder_edit = QLineEdit()
+        self._dropbox_folder_edit.setPlaceholderText("/BackupSystem")
+        folder_col.addWidget(self._dropbox_folder_edit)
+        row1.addLayout(folder_col)
+        layout.addLayout(row1)
+
+        hint = QLabel(
+            '<a href="https://www.dropbox.com/developers/apps">'
+            "Get a token from the Dropbox App Console</a>"
+        )
+        hint.setOpenExternalLinks(True)
+        layout.addWidget(hint)
+
+        return page
+
+    # -- Azure Blob page ------------------------------------------------------
+
+    def _build_azure_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        row1 = QHBoxLayout()
+        container_col = QVBoxLayout()
+        container_col.addWidget(QLabel("Container Name"))
+        self._azure_container_edit = QLineEdit()
+        self._azure_container_edit.setPlaceholderText("backups")
+        container_col.addWidget(self._azure_container_edit)
+        row1.addLayout(container_col)
+        layout.addLayout(row1)
+
+        conn_col = QVBoxLayout()
+        conn_col.addWidget(QLabel("Connection String"))
+        self._azure_conn_edit = QLineEdit()
+        self._azure_conn_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._azure_conn_edit.setPlaceholderText(
+            "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;..."
+        )
+        conn_col.addWidget(self._azure_conn_edit)
+        layout.addLayout(conn_col)
+
+        return page
+
+    # -- SFTP page ------------------------------------------------------------
+
+    def _build_sftp_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        row1 = QHBoxLayout()
+        host_col = QVBoxLayout()
+        host_col.addWidget(QLabel("Host"))
+        self._sftp_host_edit = QLineEdit()
+        self._sftp_host_edit.setPlaceholderText("sftp.example.com")
+        host_col.addWidget(self._sftp_host_edit)
+        row1.addLayout(host_col)
+
+        port_col = QVBoxLayout()
+        port_col.addWidget(QLabel("Port"))
+        self._sftp_port_edit = QLineEdit()
+        self._sftp_port_edit.setPlaceholderText("22")
+        self._sftp_port_edit.setFixedWidth(70)
+        port_col.addWidget(self._sftp_port_edit)
+        row1.addLayout(port_col)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        user_col = QVBoxLayout()
+        user_col.addWidget(QLabel("Username"))
+        self._sftp_user_edit = QLineEdit()
+        user_col.addWidget(self._sftp_user_edit)
+        row2.addLayout(user_col)
+
+        pwd_col = QVBoxLayout()
+        pwd_col.addWidget(QLabel("Password"))
+        self._sftp_pwd_edit = QLineEdit()
+        self._sftp_pwd_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        pwd_col.addWidget(self._sftp_pwd_edit)
+        row2.addLayout(pwd_col)
+
+        dir_col = QVBoxLayout()
+        dir_col.addWidget(QLabel("Remote Directory"))
+        self._sftp_dir_edit = QLineEdit()
+        self._sftp_dir_edit.setPlaceholderText("/backups")
+        dir_col.addWidget(self._sftp_dir_edit)
+        row2.addLayout(dir_col)
+        layout.addLayout(row2)
+
+        return page
+
+    # ------------------------------------------------------------------ settings / status / buttons
 
     def _build_settings_group(self) -> QGroupBox:
         box = QGroupBox("Backup Settings")
         layout = QHBoxLayout(box)
 
-        # Schedule
         sched_col = QVBoxLayout()
         sched_col.addWidget(QLabel("Schedule"))
         self._schedule_combo = QComboBox()
@@ -167,7 +406,6 @@ class MainWindow(QMainWindow):
         sched_col.addWidget(self._schedule_combo)
         layout.addLayout(sched_col)
 
-        # Time
         time_col = QVBoxLayout()
         self._time_label = QLabel("Time (HH:MM)")
         time_col.addWidget(self._time_label)
@@ -176,7 +414,6 @@ class MainWindow(QMainWindow):
         time_col.addWidget(self._time_edit)
         layout.addLayout(time_col)
 
-        # Retention
         ret_col = QVBoxLayout()
         ret_col.addWidget(QLabel("Keep Last N Backups"))
         self._retention_spin = QSpinBox()
@@ -185,7 +422,6 @@ class MainWindow(QMainWindow):
         ret_col.addWidget(self._retention_spin)
         layout.addLayout(ret_col)
 
-        # Password
         pwd_col = QVBoxLayout()
         pwd_col.addWidget(QLabel("Encryption Password"))
         self._password_edit = QLineEdit()
@@ -235,22 +471,93 @@ class MainWindow(QMainWindow):
         row.addWidget(self._save_btn)
 
         self._backup_btn = QPushButton("▶  Backup Now")
-        self._backup_btn.setStyleSheet("QPushButton { background-color: #1d4ed8; color: white; font-weight: bold; padding: 6px 18px; }")
+        self._backup_btn.setStyleSheet(
+            "QPushButton { background-color: #1d4ed8; color: white; "
+            "font-weight: bold; padding: 6px 18px; }"
+        )
         self._backup_btn.clicked.connect(self._on_backup_now)
         row.addWidget(self._backup_btn)
 
         return row
 
+    # --------------------------------------------------------- provider switching
+
+    def _on_provider_changed(self, idx: int):
+        _, provider_val, page_idx = _PROVIDERS[idx]
+        self._storage_stack.setCurrentIndex(page_idx)
+        if page_idx == 0:
+            self._refresh_s3_page(provider_val)
+
+    def _refresh_s3_page(self, provider: str) -> None:
+        show_ep = provider != "aws_s3"
+        self._s3_endpoint_label.setVisible(show_ep)
+        self._s3_endpoint_edit.setVisible(show_ep)
+
+        show_region = provider in ("aws_s3", "minio")
+        self._s3_region_label.setVisible(show_region)
+        self._s3_region_edit.setVisible(show_region)
+
+        placeholders = {
+            "ionos":        "s3-eu-central-1.ionoscloud.com",
+            "minio":        "minio.example.com:9000",
+            "backblaze_b2": "s3.us-west-001.backblazeb2.com",
+        }
+        self._s3_endpoint_edit.setPlaceholderText(
+            placeholders.get(provider, "s3.example.com")
+        )
+
     # --------------------------------------------------------- config <-> UI
+
+    def _current_provider_value(self) -> str:
+        _, val, _ = _PROVIDERS[self._provider_combo.currentIndex()]
+        return val
 
     def _load_config_to_ui(self):
         self._folders_list.clear()
         for folder in self._config.get("folders", []):
             self._folders_list.addItem(folder)
-        self._endpoint_edit.setText(self._config.get("ionos_endpoint", ""))
-        self._bucket_edit.setText(self._config.get("ionos_bucket", ""))
-        self._access_key_edit.setText(self._config.get("ionos_access_key", ""))
-        self._secret_key_edit.setText(self._config.get("ionos_secret_key", ""))
+
+        # Provider selector
+        provider = self._config.get("storage_provider", "ionos")
+        combo_idx = _VALUE_TO_IDX.get(provider, 0)
+        self._provider_combo.setCurrentIndex(combo_idx)
+        # Stack + S3 page layout triggered by signal, but call manually for first load.
+        _, _, page_idx = _PROVIDERS[combo_idx]
+        self._storage_stack.setCurrentIndex(page_idx)
+        if page_idx == 0:
+            self._refresh_s3_page(provider)
+
+        # S3 fields
+        self._s3_endpoint_edit.setText(self._config.get("s3_endpoint", ""))
+        self._s3_region_edit.setText(self._config.get("s3_region", ""))
+        self._s3_bucket_edit.setText(self._config.get("s3_bucket", ""))
+        self._s3_access_key_edit.setText(self._config.get("s3_access_key", ""))
+        self._s3_secret_key_edit.setText(self._config.get("s3_secret_key", ""))
+
+        # OneDrive fields
+        self._onedrive_folder_edit.setText(self._config.get("onedrive_folder", "BackupSystem"))
+        self._onedrive_token_edit.setText(self._config.get("onedrive_access_token", ""))
+
+        # Google Drive fields
+        self._gdrive_folder_edit.setText(self._config.get("gdrive_folder", "BackupSystem"))
+        self._gdrive_creds_edit.setPlainText(self._config.get("gdrive_credentials_json", ""))
+
+        # Dropbox fields
+        self._dropbox_token_edit.setText(self._config.get("dropbox_access_token", ""))
+        self._dropbox_folder_edit.setText(self._config.get("dropbox_folder", "/BackupSystem"))
+
+        # Azure fields
+        self._azure_container_edit.setText(self._config.get("azure_container", "backups"))
+        self._azure_conn_edit.setText(self._config.get("azure_connection_string", ""))
+
+        # SFTP fields
+        self._sftp_host_edit.setText(self._config.get("sftp_host", ""))
+        self._sftp_port_edit.setText(str(self._config.get("sftp_port", "22")))
+        self._sftp_user_edit.setText(self._config.get("sftp_username", ""))
+        self._sftp_pwd_edit.setText(self._config.get("sftp_password", ""))
+        self._sftp_dir_edit.setText(self._config.get("sftp_remote_dir", "/backups"))
+
+        # Schedule / retention
         sched = self._config.get("schedule_type", "daily").capitalize()
         idx = self._schedule_combo.findText(sched)
         if idx >= 0:
@@ -258,22 +565,58 @@ class MainWindow(QMainWindow):
         t = QTime.fromString(self._config.get("schedule_time", "02:00"), "HH:mm")
         self._time_edit.setTime(t if t.isValid() else QTime(2, 0))
         try:
-            self._retention_spin.setValue(max(1, int(self._config.get("retention_count") or 30)))
+            self._retention_spin.setValue(
+                max(1, int(self._config.get("retention_count") or 30))
+            )
         except (TypeError, ValueError):
             self._retention_spin.setValue(30)
         self._on_schedule_type_changed(self._schedule_combo.currentText())
 
     def _collect_config(self) -> dict:
         cfg = dict(self._config)
-        cfg["folders"] = [self._folders_list.item(i).text()
-                          for i in range(self._folders_list.count())]
-        cfg["ionos_endpoint"] = self._endpoint_edit.text().strip()
-        cfg["ionos_bucket"] = self._bucket_edit.text().strip()
-        cfg["ionos_access_key"] = self._access_key_edit.text().strip()
-        cfg["ionos_secret_key"] = self._secret_key_edit.text().strip()
+        cfg["folders"] = [
+            self._folders_list.item(i).text()
+            for i in range(self._folders_list.count())
+        ]
+
+        # Provider
+        cfg["storage_provider"] = self._current_provider_value()
+
+        # S3 fields (always collected — populated regardless of current page)
+        cfg["s3_endpoint"] = self._s3_endpoint_edit.text().strip()
+        cfg["s3_region"] = self._s3_region_edit.text().strip()
+        cfg["s3_bucket"] = self._s3_bucket_edit.text().strip()
+        cfg["s3_access_key"] = self._s3_access_key_edit.text().strip()
+        cfg["s3_secret_key"] = self._s3_secret_key_edit.text().strip()
+
+        # OneDrive
+        cfg["onedrive_folder"] = self._onedrive_folder_edit.text().strip() or "BackupSystem"
+        cfg["onedrive_access_token"] = self._onedrive_token_edit.text().strip()
+
+        # Google Drive
+        cfg["gdrive_folder"] = self._gdrive_folder_edit.text().strip() or "BackupSystem"
+        cfg["gdrive_credentials_json"] = self._gdrive_creds_edit.toPlainText().strip()
+
+        # Dropbox
+        cfg["dropbox_access_token"] = self._dropbox_token_edit.text().strip()
+        cfg["dropbox_folder"] = self._dropbox_folder_edit.text().strip() or "/BackupSystem"
+
+        # Azure
+        cfg["azure_container"] = self._azure_container_edit.text().strip() or "backups"
+        cfg["azure_connection_string"] = self._azure_conn_edit.text().strip()
+
+        # SFTP
+        cfg["sftp_host"] = self._sftp_host_edit.text().strip()
+        cfg["sftp_port"] = self._sftp_port_edit.text().strip() or "22"
+        cfg["sftp_username"] = self._sftp_user_edit.text().strip()
+        cfg["sftp_password"] = self._sftp_pwd_edit.text().strip()
+        cfg["sftp_remote_dir"] = self._sftp_dir_edit.text().strip() or "/backups"
+
+        # Schedule / retention
         cfg["schedule_type"] = self._schedule_combo.currentText().lower()
         cfg["schedule_time"] = self._time_edit.time().toString("HH:mm")
         cfg["retention_count"] = max(1, self._retention_spin.value())
+
         return cfg
 
     # ---------------------------------------------------------------- slots
@@ -282,8 +625,8 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Folder to Back Up")
         if not path:
             return
-        # Prevent duplicates.
-        existing = [self._folders_list.item(i).text() for i in range(self._folders_list.count())]
+        existing = [self._folders_list.item(i).text()
+                    for i in range(self._folders_list.count())]
         if path not in existing:
             self._folders_list.addItem(path)
 
@@ -303,16 +646,19 @@ class MainWindow(QMainWindow):
         except RuntimeError as e:
             QMessageBox.critical(self, "Save Failed", str(e))
             return
-        # Always call save_encryption_password so clearing the field deletes the stored credential.
         save_encryption_password(self._password_edit.text())
         self._restart_scheduler()
         self._status_label.setText("Settings saved.")
 
     def _on_test_connection(self):
         cfg = self._collect_config()
-        missing = [k for k in ("ionos_endpoint", "ionos_bucket", "ionos_access_key", "ionos_secret_key") if not cfg.get(k)]
+        provider = cfg.get("storage_provider", "ionos")
+        missing = self._missing_fields(cfg, provider)
         if missing:
-            QMessageBox.warning(self, "Missing Fields", f"Please fill in: {', '.join(missing)}")
+            QMessageBox.warning(
+                self, "Missing Fields",
+                f"Please fill in the required fields: {', '.join(missing)}"
+            )
             return
         self._test_btn.setEnabled(False)
         self._test_btn.setText("Testing…")
@@ -320,22 +666,47 @@ class MainWindow(QMainWindow):
         self._conn_thread.result.connect(self._on_connection_result)
         self._conn_thread.start()
 
+    @staticmethod
+    def _missing_fields(cfg: dict, provider: str) -> list:
+        if provider in ("ionos", "minio", "backblaze_b2"):
+            return [k for k in ("s3_endpoint", "s3_bucket", "s3_access_key", "s3_secret_key")
+                    if not cfg.get(k)]
+        if provider == "aws_s3":
+            return [k for k in ("s3_bucket", "s3_access_key", "s3_secret_key")
+                    if not cfg.get(k)]
+        if provider == "onedrive":
+            return [k for k in ("onedrive_access_token",) if not cfg.get(k)]
+        if provider == "google_drive":
+            return [k for k in ("gdrive_credentials_json",) if not cfg.get(k)]
+        if provider == "dropbox":
+            return [k for k in ("dropbox_access_token",) if not cfg.get(k)]
+        if provider == "azure_blob":
+            return [k for k in ("azure_connection_string", "azure_container")
+                    if not cfg.get(k)]
+        if provider == "sftp":
+            return [k for k in ("sftp_host", "sftp_username") if not cfg.get(k)]
+        return []
+
     def _on_connection_result(self, ok: bool):
         self._test_btn.setEnabled(True)
         self._test_btn.setText("Test Connection")
         if ok:
-            QMessageBox.information(self, "Connection OK", "Successfully connected to IONOS bucket.")
+            QMessageBox.information(self, "Connection OK",
+                                    "Successfully connected to the storage backend.")
         else:
-            QMessageBox.critical(self, "Connection Failed", "Could not connect. Check your credentials and endpoint.")
+            QMessageBox.critical(self, "Connection Failed",
+                                 "Could not connect. Check your credentials and settings.")
 
     def _on_backup_now(self):
         if self._worker and self._worker.isRunning():
             return
         if self._folders_list.count() == 0:
-            QMessageBox.warning(self, "No Folders", "Add at least one folder to back up.")
+            QMessageBox.warning(self, "No Folders",
+                                "Add at least one folder to back up.")
             return
         if not self._password_edit.text():
-            QMessageBox.warning(self, "Password Required", "Enter your encryption password before running a backup.")
+            QMessageBox.warning(self, "Password Required",
+                                "Enter your encryption password before running a backup.")
             return
         cfg = self._collect_config()
         cfg["password"] = self._password_edit.text()
@@ -352,7 +723,6 @@ class MainWindow(QMainWindow):
         self._worker.log_line.connect(self._append_log)
         self._worker.backup_done.connect(self._on_backup_finished)
         self._worker.start()
-        # Remove plaintext password from the local dict now that the worker has its own copy.
         cfg.pop("password", None)
 
     def _append_log(self, line: str):
@@ -378,7 +748,7 @@ class MainWindow(QMainWindow):
             self._timer.stop()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_scheduler_tick)
-        self._timer.start(60_000)  # check every minute
+        self._timer.start(60_000)
         self._compute_next_run()
 
     def _compute_next_run(self):
@@ -394,16 +764,21 @@ class MainWindow(QMainWindow):
             h, m = 2, 0
 
         if stype == "hourly":
-            self._next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            self._next_run = (
+                now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            )
         elif stype == "daily":
             candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            self._next_run = candidate if candidate > now else candidate + timedelta(days=1)
+            self._next_run = (
+                candidate if candidate > now else candidate + timedelta(days=1)
+            )
         elif stype == "weekly":
             candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            days_ahead = (6 - now.weekday()) % 7  # days until next Sunday
+            days_ahead = (6 - now.weekday()) % 7
             if days_ahead == 0:
-                # Today is Sunday — use today's slot if it hasn't passed, else next Sunday.
-                self._next_run = candidate if candidate > now else candidate + timedelta(days=7)
+                self._next_run = (
+                    candidate if candidate > now else candidate + timedelta(days=7)
+                )
             else:
                 self._next_run = candidate + timedelta(days=days_ahead)
 
@@ -441,25 +816,24 @@ class MainWindow(QMainWindow):
     def _on_no_update(self):
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Check for Updates")
-        QMessageBox.information(self, "Up to date", f"You are running the latest version (v{self._version}).")
+        QMessageBox.information(
+            self, "Up to date",
+            f"You are running the latest version (v{self._version})."
+        )
 
     def _on_update_available(self, latest: str, url: str, checksum_url: str):
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Check for Updates")
         if not checksum_url:
-            # download_update() enforces a checksum; without one the install would
-            # be rejected anyway. Inform the user instead of offering a failing download.
             QMessageBox.information(
-                self,
-                "Update Available",
+                self, "Update Available",
                 f"Version {latest} is available, but no SHA-256 checksum asset was found "
                 f"in the release.\n\nAuto-update requires integrity verification. "
                 f"Please download manually from the GitHub releases page.",
             )
             return
         reply = QMessageBox.question(
-            self,
-            "Update Available",
+            self, "Update Available",
             f"Version {latest} is available (you have v{self._version}).\n"
             f"The download will be SHA-256 verified before installation.\n\nDownload and install now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -490,8 +864,7 @@ class MainWindow(QMainWindow):
             )
             return
         reply = QMessageBox.question(
-            self,
-            "Install Update",
+            self, "Install Update",
             "Download complete and verified. The application will restart to apply the update.\n\nRestart now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -501,19 +874,16 @@ class MainWindow(QMainWindow):
                 QApplication.quit()
             else:
                 QMessageBox.information(
-                    self,
-                    "Manual Install Required",
+                    self, "Manual Install Required",
                     f"Auto-update is only supported in the installed .exe.\n\nNew file is at:\n{path}",
                 )
         else:
-            # User declined restart — clean up the downloaded temp directory.
             tmp_dir = os.path.dirname(path)
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # -------------------------------------------------------- window lifecycle
 
     def request_quit(self):
-        """Graceful quit: drain any running workers before exiting."""
         from PyQt6.QtWidgets import QApplication
         running = []
         if self._worker and self._worker.isRunning():
@@ -533,7 +903,7 @@ class MainWindow(QMainWindow):
                        getattr(self, "_update_check_thread", None),
                        getattr(self, "_conn_thread", None)]:
             if thread and thread.isRunning():
-                thread.requestInterruption()  # cooperative cancellation for blocking loops
+                thread.requestInterruption()
                 thread.quit()
                 thread.wait(3000)
         QApplication.quit()
