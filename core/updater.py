@@ -119,15 +119,21 @@ def download_update(
         )
         with urllib.request.urlopen(sha_req, timeout=30) as resp:
             checksum_text = resp.read().decode("utf-8")
-        # Handle both single-entry ("HASH  filename") and multi-entry sha256sums.txt.
-        # Find the line referencing BackupSystem.exe (case-insensitive).
+        # Handle both single-entry ("HASH  BackupSystem.exe") and multi-entry
+        # sha256sums.txt. Find the line whose filename token contains "backupsystem"
+        # and ends in ".exe" — covers both BackupSystem.exe and BackupSystem-1.2.3.exe.
         expected_hex = None
         for line in checksum_text.splitlines():
             parts = line.split()
-            if len(parts) >= 1:
-                if len(parts) == 1 or "backupsystem.exe" in parts[-1].lower():
+            if len(parts) >= 2:
+                fname = parts[-1].lower()
+                if "backupsystem" in fname and fname.endswith(".exe"):
                     expected_hex = parts[0]
                     break
+            elif len(parts) == 1 and len(parts[0]) == 64:
+                # Bare 64-char hex hash (single-entry file with no filename column).
+                expected_hex = parts[0]
+                break
         if not expected_hex:
             logging.error("SHA-256 checksum file did not contain a hash for BackupSystem.exe")
             shutil.rmtree(tmp_dir, ignore_errors=True)

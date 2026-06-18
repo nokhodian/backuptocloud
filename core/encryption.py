@@ -39,7 +39,8 @@ def encrypt_file(src_path: str, dst_path: str, password: str) -> None:
             if not chunk:
                 break
             nonce = os.urandom(_NONCE_SIZE)
-            ciphertext = aesgcm.encrypt(nonce, chunk, None)
+            # Bind chunk index as AAD so reordering of ciphertext chunks is detected.
+            ciphertext = aesgcm.encrypt(nonce, chunk, struct.pack(">I", count))
             out.write(nonce)
             out.write(struct.pack(">I", len(ciphertext)))
             out.write(ciphertext)
@@ -65,11 +66,12 @@ def decrypt_file(src_path: str, dst_path: str, password: str) -> None:
 
             with os.fdopen(tmp_fd, "wb") as out:
                 tmp_fd = None  # fdopen took ownership
-                for _ in range(num_chunks):
+                for chunk_index in range(num_chunks):
                     nonce = inp.read(_NONCE_SIZE)
                     chunk_len = struct.unpack(">I", inp.read(4))[0]
                     ciphertext = inp.read(chunk_len)
-                    out.write(aesgcm.decrypt(nonce, ciphertext, None))
+                    # Verify chunk index AAD — detects reordering of ciphertext chunks.
+                    out.write(aesgcm.decrypt(nonce, ciphertext, struct.pack(">I", chunk_index)))
 
         os.replace(tmp_path, dst_path)
     except Exception:

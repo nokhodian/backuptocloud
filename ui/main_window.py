@@ -415,11 +415,22 @@ class MainWindow(QMainWindow):
     def _on_update_available(self, latest: str, url: str, checksum_url: str):
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Check for Updates")
-        verified = " (SHA-256 verified)" if checksum_url else " (no checksum — install with caution)"
+        if not checksum_url:
+            # download_update() enforces a checksum; without one the install would
+            # be rejected anyway. Inform the user instead of offering a failing download.
+            QMessageBox.information(
+                self,
+                "Update Available",
+                f"Version {latest} is available, but no SHA-256 checksum asset was found "
+                f"in the release.\n\nAuto-update requires integrity verification. "
+                f"Please download manually from the GitHub releases page.",
+            )
+            return
         reply = QMessageBox.question(
             self,
             "Update Available",
-            f"Version {latest} is available (you have v{self._version}).{verified}\n\nDownload and install now?",
+            f"Version {latest} is available (you have v{self._version}).\n"
+            f"The download will be SHA-256 verified before installation.\n\nDownload and install now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:

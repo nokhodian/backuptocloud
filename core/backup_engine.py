@@ -94,7 +94,7 @@ def _upload_with_retry(storage: IONOSStorage, local_path: str, object_key: str, 
             while time.monotonic() < deadline:
                 if worker and worker.isInterruptionRequested():
                     raise InterruptedError("Backup cancelled")
-                time.sleep(min(1.0, deadline - time.monotonic()))
+                time.sleep(max(0.0, min(1.0, deadline - time.monotonic())))
 
 
 def _zip_folders(folders: list, zip_path: str) -> None:
