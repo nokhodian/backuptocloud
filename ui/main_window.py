@@ -6,9 +6,11 @@ from datetime import datetime, timedelta
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QTime
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
+    QDialog, QDialogButtonBox,
     QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QSpinBox, QStackedWidget, QTextEdit, QTimeEdit, QVBoxLayout,
+    QSpinBox, QStackedWidget, QTabWidget, QTextBrowser,
+    QTextEdit, QTimeEdit, QVBoxLayout,
     QWidget, QComboBox,
 )
 
@@ -84,6 +86,294 @@ class _UpdateDownloadThread(QThread):
         self.done.emit(path or "")
 
 
+_HELP_OVERVIEW = """\
+<h2>BackupSystem — How It Works</h2>
+<p>BackupSystem automatically compresses your chosen folders into a <b>.zip</b> archive,
+encrypts it with <b>AES-256-GCM</b> using your password, then uploads the encrypted
+file to the cloud storage provider you choose.</p>
+
+<h3>Typical workflow</h3>
+<ol>
+  <li><b>Add folders</b> — click <i>+ Add Folder</i> to select each folder you want backed up.</li>
+  <li><b>Choose a storage provider</b> — pick from the Provider drop-down and fill in your
+      credentials (see the provider tabs for exact instructions).</li>
+  <li><b>Set a schedule</b> — daily, weekly, or hourly backups run automatically in the
+      background while the app is minimised to the system tray.</li>
+  <li><b>Set retention</b> — older backups beyond the retention count are deleted automatically.</li>
+  <li><b>Save settings</b> — click <i>Save Settings</i>, then <i>Test Connection</i> to verify
+      credentials.</li>
+  <li><b>Backup Now</b> — run an immediate backup at any time.</li>
+</ol>
+
+<h3>Encryption</h3>
+<p>Your password is used to derive an AES-256 key (PBKDF2, 200 000 iterations).
+The encrypted file is stored with the extension <code>.zip.enc</code>.
+<b>There is no password recovery</b> — store your password safely.</p>
+
+<h3>Log file</h3>
+<p>Logs are written to <code>%APPDATA%\\BackupSystem\\backupsystem.log</code>.</p>
+"""
+
+_HELP_PROVIDERS = {
+    "IONOS Object Storage": """\
+<h2>IONOS Object Storage</h2>
+<p>IONOS Object Storage is an S3-compatible service offered by IONOS (1&amp;1).</p>
+<h3>Steps to obtain credentials</h3>
+<ol>
+  <li>Log in to your IONOS account at <b>my.ionos.com</b>.</li>
+  <li>Open <b>Cloud → Object Storage</b>.</li>
+  <li>Click <b>Manage Keys</b> → <b>Generate Key</b>.</li>
+  <li>Copy the <b>Access Key</b> and <b>Secret Key</b> — the secret is shown only once.</li>
+  <li>Note your S3 endpoint (e.g. <code>s3-eu-central-1.ionoscloud.com</code>) shown on the
+      Object Storage overview page.</li>
+  <li>Create a bucket and note its name.</li>
+</ol>
+<h3>Fields</h3>
+<ul>
+  <li><b>Endpoint</b> — e.g. <code>s3-eu-central-1.ionoscloud.com</code></li>
+  <li><b>Bucket</b> — the bucket name you created</li>
+  <li><b>Access Key</b> — from Manage Keys</li>
+  <li><b>Secret Key</b> — from Manage Keys (save immediately, shown once)</li>
+  <li><b>Region</b> — leave blank (IONOS ignores it)</li>
+</ul>
+""",
+    "AWS S3": """\
+<h2>AWS S3</h2>
+<p>Amazon Simple Storage Service — the original S3.</p>
+<h3>Steps to obtain credentials</h3>
+<ol>
+  <li>Sign in to <b>console.aws.amazon.com</b> and open the <b>S3</b> service.</li>
+  <li>Create a bucket and note the bucket name and its AWS region (e.g. <code>eu-west-1</code>).</li>
+  <li>Open <b>IAM → Users → Add User</b>.</li>
+  <li>Attach the policy <b>AmazonS3FullAccess</b> (or a custom policy limited to your bucket).</li>
+  <li>Go to <b>Security credentials → Access keys → Create access key</b>.</li>
+  <li>Copy the <b>Access key ID</b> and <b>Secret access key</b>.</li>
+</ol>
+<h3>Fields</h3>
+<ul>
+  <li><b>Endpoint</b> — leave blank (uses AWS automatically)</li>
+  <li><b>Bucket</b> — your S3 bucket name</li>
+  <li><b>Region</b> — e.g. <code>eu-west-1</code></li>
+  <li><b>Access Key</b> — IAM access key ID</li>
+  <li><b>Secret Key</b> — IAM secret access key</li>
+</ul>
+""",
+    "MinIO / Generic S3": """\
+<h2>MinIO / Generic S3-compatible Storage</h2>
+<p>Use this for self-hosted MinIO, Ceph, Wasabi, Cloudflare R2, or any other
+S3-compatible service.</p>
+<h3>MinIO (self-hosted)</h3>
+<ol>
+  <li>Open the MinIO console (usually <code>http://&lt;host&gt;:9001</code>).</li>
+  <li>Create a bucket.</li>
+  <li>Go to <b>Access Keys → Create access key</b>. Copy both keys.</li>
+  <li>The endpoint is <code>&lt;host&gt;:9000</code> (the API port, not the console port).</li>
+</ol>
+<h3>Cloudflare R2</h3>
+<ol>
+  <li>Open the Cloudflare dashboard → <b>R2</b> → create a bucket.</li>
+  <li>Go to <b>R2 → Manage R2 API tokens → Create API token</b> (Object Read &amp; Write).</li>
+  <li>The endpoint is <code>&lt;account-id&gt;.r2.cloudflarestorage.com</code>.</li>
+</ol>
+<h3>Fields</h3>
+<ul>
+  <li><b>Endpoint</b> — host and optional port, e.g. <code>minio.example.com:9000</code></li>
+  <li><b>Bucket</b> — bucket name</li>
+  <li><b>Access Key / Secret Key</b> — from your service's key management</li>
+  <li><b>Region</b> — leave blank unless your service requires it</li>
+</ul>
+""",
+    "Backblaze B2": """\
+<h2>Backblaze B2</h2>
+<p>Backblaze B2 is a low-cost object storage service compatible with the S3 API.</p>
+<h3>Steps to obtain credentials</h3>
+<ol>
+  <li>Log in at <b>secure.backblaze.com</b>.</li>
+  <li>Open <b>B2 Cloud Storage → Buckets → Create a Bucket</b>.</li>
+  <li>Note the bucket name and the <b>Endpoint</b> shown on the bucket details page
+      (e.g. <code>s3.us-west-004.backblazeb2.com</code>).</li>
+  <li>Go to <b>Account → App Keys → Add a New Application Key</b>.</li>
+  <li>Grant access to the bucket you created, enable <b>Read and Write</b>.</li>
+  <li>Copy the <b>keyID</b> (= Access Key) and <b>applicationKey</b> (= Secret Key).
+      The secret is shown only once.</li>
+</ol>
+<h3>Fields</h3>
+<ul>
+  <li><b>Endpoint</b> — e.g. <code>s3.us-west-004.backblazeb2.com</code></li>
+  <li><b>Bucket</b> — your B2 bucket name</li>
+  <li><b>Access Key</b> — App Key ID (keyID)</li>
+  <li><b>Secret Key</b> — applicationKey</li>
+  <li><b>Region</b> — leave blank</li>
+</ul>
+""",
+    "Microsoft OneDrive": """\
+<h2>Microsoft OneDrive</h2>
+<p>BackupSystem uploads backups into a folder (default: <i>BackupSystem</i>) in your
+personal OneDrive via the Microsoft Graph API.</p>
+<h3>How to get an access token (personal account)</h3>
+<ol>
+  <li>Go to <b>portal.azure.com</b> → <b>Azure Active Directory → App registrations
+      → New registration</b>.</li>
+  <li>Set the redirect URI to <code>https://login.microsoftonline.com/common/oauth2/nativeclient</code>.</li>
+  <li>Under <b>API permissions</b> add <b>Microsoft Graph → Delegated →
+      Files.ReadWrite</b>.</li>
+  <li>Use the <b>OAuth 2.0 device flow</b> or the Graph Explorer at
+      <code>developer.microsoft.com/graph/graph-explorer</code> to sign in and copy
+      the bearer token from the request headers.</li>
+  <li>Paste the token into the <b>Access Token</b> field.</li>
+</ol>
+<p><b>Note:</b> Access tokens expire (usually in 1 hour). For production use, store a
+refresh token and renew it automatically. A future version of BackupSystem will handle
+this automatically.</p>
+<h3>Fields</h3>
+<ul>
+  <li><b>Folder</b> — folder name inside your OneDrive root (default: <i>BackupSystem</i>)</li>
+  <li><b>Access Token</b> — the bearer token from Microsoft Graph</li>
+</ul>
+""",
+    "Google Drive": """\
+<h2>Google Drive</h2>
+<p>BackupSystem uploads backups into a folder (default: <i>BackupSystem</i>) in your
+Google Drive using OAuth2 credentials.</p>
+<h3>Steps to obtain credentials JSON</h3>
+<ol>
+  <li>Go to <b>console.cloud.google.com</b> → create or select a project.</li>
+  <li>Enable the <b>Google Drive API</b> (APIs &amp; Services → Library → search
+      "Google Drive API" → Enable).</li>
+  <li>Go to <b>APIs &amp; Services → Credentials → Create Credentials →
+      OAuth client ID</b>.</li>
+  <li>Choose <b>Desktop app</b>. Download the JSON file.</li>
+  <li>Run the following Python snippet once to authorise and get an OAuth token:</li>
+</ol>
+<pre>
+from google_auth_oauthlib.flow import InstalledAppFlow
+flow = InstalledAppFlow.from_client_secrets_file(
+    "client_secret.json",
+    scopes=["https://www.googleapis.com/auth/drive.file"],
+)
+creds = flow.run_local_server(port=0)
+import json
+print(json.dumps({
+    "access_token": creds.token,
+    "refresh_token": creds.refresh_token,
+    "client_id": creds.client_id,
+    "client_secret": creds.client_secret,
+}))
+</pre>
+<ol start="6">
+  <li>Paste the printed JSON into the <b>Credentials JSON</b> field.</li>
+</ol>
+<h3>Fields</h3>
+<ul>
+  <li><b>Folder</b> — folder name in Google Drive (default: <i>BackupSystem</i>)</li>
+  <li><b>Credentials JSON</b> — the JSON object with access_token, refresh_token,
+      client_id, client_secret</li>
+</ul>
+""",
+    "Dropbox": """\
+<h2>Dropbox</h2>
+<p>BackupSystem uploads backups into a folder (default: <i>/BackupSystem</i>) in your
+Dropbox using a long-lived access token.</p>
+<h3>Steps to obtain an access token</h3>
+<ol>
+  <li>Go to <b>dropbox.com/developers/apps</b> → <b>Create app</b>.</li>
+  <li>Choose <b>Scoped access</b>, <b>Full Dropbox</b> access (or <b>App folder</b> if
+      you prefer isolation).</li>
+  <li>Give the app a name and click <b>Create app</b>.</li>
+  <li>Under <b>Permissions</b>, enable <code>files.content.write</code> and
+      <code>files.content.read</code>. Click <b>Submit</b>.</li>
+  <li>Under the <b>Settings</b> tab, scroll to <b>OAuth 2</b> → click
+      <b>Generate access token</b>.</li>
+  <li>Copy the generated token and paste it into the <b>Access Token</b> field.</li>
+</ol>
+<p><b>Note:</b> Short-lived tokens (default since Dropbox API v2) expire after 4 hours.
+For a long-lived token, set the <i>Access token expiration</i> to <b>No expiration</b>
+in the app settings before generating.</p>
+<h3>Fields</h3>
+<ul>
+  <li><b>Folder</b> — path inside Dropbox (default: <i>/BackupSystem</i>)</li>
+  <li><b>Access Token</b> — from the Dropbox app console</li>
+</ul>
+""",
+    "Azure Blob Storage": """\
+<h2>Azure Blob Storage</h2>
+<p>BackupSystem uploads backups to an Azure Blob Storage container using a connection
+string.</p>
+<h3>Steps to obtain a connection string</h3>
+<ol>
+  <li>Log in to <b>portal.azure.com</b>.</li>
+  <li>Create a <b>Storage account</b> (or use an existing one).</li>
+  <li>Open the storage account → <b>Security + networking → Access keys</b>.</li>
+  <li>Click <b>Show keys</b> and copy the <b>Connection string</b> for key1 or key2.</li>
+  <li>Inside the storage account go to <b>Containers → + Container</b> and create one.
+      Note the container name.</li>
+</ol>
+<h3>Fields</h3>
+<ul>
+  <li><b>Container</b> — the blob container name</li>
+  <li><b>Connection String</b> — the full connection string from Access keys
+      (starts with <code>DefaultEndpointsProtocol=https;...</code>)</li>
+</ul>
+""",
+    "SFTP": """\
+<h2>SFTP</h2>
+<p>BackupSystem uploads backups to any server that supports SFTP (SSH File Transfer
+Protocol) — including NAS devices, Linux servers, and shared hosting.</p>
+<h3>What you need</h3>
+<ul>
+  <li>The <b>hostname or IP address</b> of the server.</li>
+  <li>The <b>SSH/SFTP port</b> (default: 22).</li>
+  <li>A <b>username</b> and <b>password</b> with write access to the remote directory.</li>
+  <li>The <b>remote directory path</b> where backups will be stored
+      (e.g. <code>/home/user/backups</code>). The directory is created automatically
+      if it does not exist.</li>
+</ul>
+<h3>Tips</h3>
+<ul>
+  <li>On most Linux servers, enable SFTP by ensuring <code>openssh-server</code> is installed
+      and running.</li>
+  <li>On a QNAP or Synology NAS, enable SSH in the control panel and use port 22.</li>
+  <li>For security, create a dedicated backup user with access limited to the backup
+      directory only (using <code>ChrootDirectory</code> in <code>sshd_config</code>).</li>
+</ul>
+<h3>Fields</h3>
+<ul>
+  <li><b>Host</b> — hostname or IP address</li>
+  <li><b>Port</b> — SSH port (default: 22)</li>
+  <li><b>Username</b> — SSH username</li>
+  <li><b>Password</b> — SSH password</li>
+  <li><b>Remote Directory</b> — absolute path on the server</li>
+</ul>
+""",
+}
+
+
+class _HelpDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("BackupSystem — Help")
+        self.setMinimumSize(700, 520)
+
+        layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        overview = QTextBrowser()
+        overview.setOpenExternalLinks(True)
+        overview.setHtml(_HELP_OVERVIEW)
+        tabs.addTab(overview, "Overview")
+
+        for name, html in _HELP_PROVIDERS.items():
+            browser = QTextBrowser()
+            browser.setOpenExternalLinks(True)
+            browser.setHtml(html)
+            tabs.addTab(browser, name.split()[0])  # short label
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.accept)
+        layout.addWidget(buttons)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, version: str = "0.0.0"):
         super().__init__()
@@ -103,6 +393,10 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         self.setWindowTitle(f"BackupSystem v{self._version}")
         self.setMinimumWidth(700)
+
+        help_menu = self.menuBar().addMenu("&Help")
+        help_action = help_menu.addAction("&How to Use…")
+        help_action.triggered.connect(self._show_help)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -880,6 +1174,12 @@ class MainWindow(QMainWindow):
         else:
             tmp_dir = os.path.dirname(path)
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # --------------------------------------------------------------- help
+
+    def _show_help(self):
+        dlg = _HelpDialog(self)
+        dlg.exec()
 
     # -------------------------------------------------------- window lifecycle
 

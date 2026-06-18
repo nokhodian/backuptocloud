@@ -475,10 +475,19 @@ class SFTPStorage(BaseStorage):
         transport = paramiko.Transport((self._host, self._port))
         transport.connect(username=self._username, password=self._password)
         sftp = paramiko.SFTPClient.from_transport(transport)
-        try:
-            sftp.stat(self._remote_dir)
-        except FileNotFoundError:
-            sftp.mkdir(self._remote_dir)
+        # mkdir -p for nested remote_dir paths
+        path = ""
+        for part in self._remote_dir.split("/"):
+            if not part:
+                path = "/"
+                continue
+            path = f"{path}/{part}".lstrip("/")
+            if path != "/":
+                path = "/" + path
+            try:
+                sftp.stat(path)
+            except FileNotFoundError:
+                sftp.mkdir(path)
         return transport, sftp
 
     def upload(self, local_path: str, object_key: str,
