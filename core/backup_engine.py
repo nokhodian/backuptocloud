@@ -101,11 +101,13 @@ def _zip_folders(folders: list, zip_path: str) -> None:
     valid = [f for f in folders if f and os.path.isdir(f)]
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for folder in valid:
-            folder_name = os.path.basename(folder.rstrip("/\\")) or folder
+            # Build a unique archive prefix from the full path so two folders
+            # with the same basename (e.g. C:\docs and D:\docs) don't collide.
+            safe_prefix = folder.replace(":", "").replace("\\", "_").replace("/", "_").strip("_")
             for root, _dirs, files in os.walk(folder):
                 for filename in files:
                     full_path = os.path.join(root, filename)
-                    arcname = os.path.join(folder_name, os.path.relpath(full_path, folder))
+                    arcname = os.path.join(safe_prefix, os.path.relpath(full_path, folder))
                     zf.write(full_path, arcname)
 
 

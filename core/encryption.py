@@ -1,4 +1,5 @@
 # core/encryption.py
+import math
 import os
 import struct
 import tempfile
@@ -23,6 +24,12 @@ def _derive_key(password: str, salt: bytes) -> bytes:
 
 
 def encrypt_file(src_path: str, dst_path: str, password: str) -> None:
+    # Compute total chunk count upfront (one stat call) so we can bind both the
+    # chunk index AND the total into each chunk's AAD.  This detects both
+    # reordering and truncation attacks on stored ciphertext.
+    file_size = os.path.getsize(src_path)
+    total_chunks = math.ceil(file_size / _CHUNK_SIZE) if file_size > 0 else 0
+
     salt = os.urandom(_SALT_SIZE)
     key = _derive_key(password, salt)
     aesgcm = AESGCM(key)
@@ -39,8 +46,10 @@ def encrypt_file(src_path: str, dst_path: str, password: str) -> None:
             if not chunk:
                 break
             nonce = os.urandom(_NONCE_SIZE)
-            # Bind chunk index as AAD so reordering of ciphertext chunks is detected.
-            ciphertext = aesgcm.encrypt(nonce, chunk, struct.pack(">I", count))
+            # AAD binds (chunk_index, total_chunks) so both reordering and
+            # truncation of the ciphertext stream are detected on decrypt.
+            aad = struct.pack(">II", count, total_chunks)
+            ciphertext = aesgcm.encrypt(nonce, chunk, aad)
             out.write(nonce)
             out.write(struct.pack(">I", len(ciphertext)))
             out.write(ciphertext)
@@ -70,8 +79,9 @@ def decrypt_file(src_path: str, dst_path: str, password: str) -> None:
                     nonce = inp.read(_NONCE_SIZE)
                     chunk_len = struct.unpack(">I", inp.read(4))[0]
                     ciphertext = inp.read(chunk_len)
-                    # Verify chunk index AAD — detects reordering of ciphertext chunks.
-                    out.write(aesgcm.decrypt(nonce, ciphertext, struct.pack(">I", chunk_index)))
+                    # AAD must match encrypt_file: (chunk_index, total_chunks).
+                    aad = struct.pack(">II", chunk_index, num_chunks)
+                    out.write(aesgcm.decrypt(nonce, ciphertext, aad))
 
         os.replace(tmp_path, dst_path)
     except Exception:

@@ -6,9 +6,14 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read  # default for all jobs
+
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write  # needed by action-gh-release to create releases
 
     steps:
       - name: Checkout

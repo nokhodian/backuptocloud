@@ -26,7 +26,10 @@ def main():
     app.setApplicationName("BackupSystem")
     app.setQuitOnLastWindowClosed(False)  # keep alive when window is hidden
 
-    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+    # In a PyInstaller onefile bundle __file__ is inside the extraction temp dir;
+    # sys._MEIPASS is the reliable root for bundled data.
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    icon_path = os.path.join(base_dir, "assets", "icon.png")
     icon = QIcon(icon_path)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():

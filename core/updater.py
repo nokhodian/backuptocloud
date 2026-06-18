@@ -130,8 +130,8 @@ def download_update(
                 if "backupsystem" in fname and fname.endswith(".exe"):
                     expected_hex = parts[0]
                     break
-            elif len(parts) == 1 and len(parts[0]) == 64:
-                # Bare 64-char hex hash (single-entry file with no filename column).
+            elif len(parts) == 1 and len(parts[0]) == 64 and all(c in "0123456789abcdefABCDEF" for c in parts[0]):
+                # Bare 64-char hex hash (single-asset release with no filename column).
                 expected_hex = parts[0]
                 break
         if not expected_hex:

@@ -332,6 +332,8 @@ class MainWindow(QMainWindow):
         self._worker.log_line.connect(self._append_log)
         self._worker.backup_done.connect(self._on_backup_finished)
         self._worker.start()
+        # Remove plaintext password from the local dict now that the worker has its own copy.
+        cfg.pop("password", None)
 
     def _append_log(self, line: str):
         self._log_edit.append(line)
@@ -373,8 +375,12 @@ class MainWindow(QMainWindow):
             self._next_run = candidate if candidate > now else candidate + timedelta(days=1)
         elif stype == "weekly":
             candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            days_ahead = (6 - now.weekday()) % 7  # always runs on Sunday by design
-            self._next_run = candidate + timedelta(days=days_ahead if days_ahead else 7)
+            days_ahead = (6 - now.weekday()) % 7  # days until next Sunday
+            if days_ahead == 0:
+                # Today is Sunday — use today's slot if it hasn't passed, else next Sunday.
+                self._next_run = candidate if candidate > now else candidate + timedelta(days=7)
+            else:
+                self._next_run = candidate + timedelta(days=days_ahead)
 
     def _on_scheduler_tick(self):
         if self._next_run and datetime.now() >= self._next_run:
@@ -447,6 +453,7 @@ class MainWindow(QMainWindow):
         self._dl_thread.start()
 
     def _on_download_done(self, path: str):
+        import shutil
         self._progress_bar.setVisible(False)
         self._update_btn.setEnabled(True)
         self._update_btn.setText("Check for Updates")
@@ -457,7 +464,6 @@ class MainWindow(QMainWindow):
                 "The file may have failed its integrity check. Please try again later."
             )
             return
-        self._update_exe_path = path
         reply = QMessageBox.question(
             self,
             "Install Update",
@@ -474,6 +480,10 @@ class MainWindow(QMainWindow):
                     "Manual Install Required",
                     f"Auto-update is only supported in the installed .exe.\n\nNew file is at:\n{path}",
                 )
+        else:
+            # User declined restart — clean up the downloaded temp directory.
+            tmp_dir = os.path.dirname(path)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # -------------------------------------------------------- window lifecycle
 
@@ -495,7 +505,8 @@ class MainWindow(QMainWindow):
                 return
         for thread in [self._worker,
                        getattr(self, "_dl_thread", None),
-                       getattr(self, "_update_check_thread", None)]:
+                       getattr(self, "_update_check_thread", None),
+                       getattr(self, "_conn_thread", None)]:
             if thread and thread.isRunning():
                 thread.requestInterruption()  # cooperative cancellation for blocking loops
                 thread.quit()

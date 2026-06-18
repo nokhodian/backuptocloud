@@ -1,12 +1,17 @@
 import os
+import re
 from typing import Callable, Optional
 
 import boto3
 from botocore.config import Config
 
+_ENDPOINT_RE = re.compile(r'^[a-zA-Z0-9.\-]+$')
+
 
 class IONOSStorage:
     def __init__(self, endpoint: str, bucket: str, access_key: str, secret_key: str):
+        if not _ENDPOINT_RE.match(endpoint):
+            raise ValueError(f"Invalid endpoint — must be a hostname only, got: {endpoint!r}")
         self._bucket = bucket
         self._client = boto3.client(
             "s3",
