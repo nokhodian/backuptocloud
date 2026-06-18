@@ -163,12 +163,18 @@ class OneDriveStorage(BaseStorage):
     def list_backups(self) -> list:
         import requests
         url = f"{self._GRAPH}/me/drive/root:/{self._folder}:/children"
-        r = requests.get(url, headers=self._h(), timeout=30)
-        if r.status_code == 404:
-            return []
-        r.raise_for_status()
-        names = [i["name"] for i in r.json().get("value", [])
-                 if i["name"].startswith("backup-")]
+        names = []
+        while url:
+            r = requests.get(url, headers=self._h(), timeout=30)
+            if r.status_code == 404:
+                return []
+            r.raise_for_status()
+            data = r.json()
+            names.extend(
+                i["name"] for i in data.get("value", [])
+                if i["name"].startswith("backup-")
+            )
+            url = data.get("@odata.nextLink")
         return sorted(names)
 
     def delete(self, object_key: str) -> None:
@@ -247,6 +253,13 @@ class GoogleDriveStorage(BaseStorage):
         from googleapiclient.http import MediaFileUpload
         svc = self._svc()
         fid = self._folder_id()
+        # Delete any existing files with this name to maintain overwrite semantics
+        existing = svc.files().list(
+            q=f"'{fid}' in parents and name='{object_key}' and trashed=false",
+            fields="files(id)",
+        ).execute()
+        for ef in existing.get("files", []):
+            svc.files().delete(fileId=ef["id"]).execute()
         file_size = os.path.getsize(local_path)
         media = MediaFileUpload(local_path, resumable=True, chunksize=10 * 1024 * 1024)
         request = svc.files().create(
@@ -268,12 +281,22 @@ class GoogleDriveStorage(BaseStorage):
             fid = self._folder_id()
         except Exception:
             return []
-        res = svc.files().list(
-            q=f"'{fid}' in parents and trashed=false and name contains 'backup-'",
-            orderBy="name",
-            fields="files(name)",
-        ).execute()
-        return sorted(f["name"] for f in res.get("files", []))
+        names = []
+        page_token = None
+        while True:
+            kwargs = dict(
+                q=f"'{fid}' in parents and trashed=false and name contains 'backup-'",
+                orderBy="name",
+                fields="nextPageToken, files(name)",
+            )
+            if page_token:
+                kwargs["pageToken"] = page_token
+            res = svc.files().list(**kwargs).execute()
+            names.extend(f["name"] for f in res.get("files", []))
+            page_token = res.get("nextPageToken")
+            if not page_token:
+                break
+        return sorted(names)
 
     def delete(self, object_key: str) -> None:
         svc = self._svc()
@@ -305,10 +328,13 @@ class DropboxStorage(BaseStorage):
             raise ImportError("Dropbox requires: pip install dropbox")
         self._token = access_token
         self._folder = "/" + folder_path.strip("/")
+        self._client = None
 
     def _dbx(self):
-        import dropbox
-        return dropbox.Dropbox(self._token)
+        if self._client is None:
+            import dropbox
+            self._client = dropbox.Dropbox(self._token)
+        return self._client
 
     def upload(self, local_path: str, object_key: str,
                progress_cb: Optional[Callable[[int, int], None]] = None) -> None:
@@ -384,10 +410,13 @@ class AzureBlobStorage(BaseStorage):
             raise ImportError("Azure Blob requires: pip install azure-storage-blob")
         self._conn_str = connection_string
         self._container = container
+        self._client = None
 
     def _svc(self):
-        from azure.storage.blob import BlobServiceClient
-        return BlobServiceClient.from_connection_string(self._conn_str)
+        if self._client is None:
+            from azure.storage.blob import BlobServiceClient
+            self._client = BlobServiceClient.from_connection_string(self._conn_str)
+        return self._client
 
     def upload(self, local_path: str, object_key: str,
                progress_cb: Optional[Callable[[int, int], None]] = None) -> None:
